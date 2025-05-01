@@ -348,6 +348,7 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         self.previous_instruction_meter = initial_insn_count;
         self.due_insn_count = 0;
         self.program_result = ProgramResult::Ok(0);
+        println!("NovaFuzzer VM Input, Entrypoint: {:#x}", self.registers[11]);
         if interpreted {
             #[cfg(feature = "debugger")]
             let debug_port = self.debug_port.clone();
