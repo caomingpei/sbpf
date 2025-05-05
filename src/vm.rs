@@ -24,7 +24,7 @@ use crate::{
 use std::{collections::BTreeMap, fmt::Debug};
 
 use bytemuck::Pod;
-use instrument::Instrumenter;
+use instrument::{DepthInstrumenter, Instrumenter};
 use novafuzz_config::MM_INPUT_START;
 use novafuzz_types::{
     semantic::{AccountAttribute, InputAttribute},
@@ -333,7 +333,7 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
     ) -> Self {
         // NovaFuzz: record the depth of vm creation
         if let Some(instrumenter_rc) = &instrumenter {
-            instrumenter_rc.borrow_mut().vm_depth += 1;
+            instrumenter_rc.borrow_mut().current_vm_depth += 1;
         }
 
         let config = loader.get_config();
@@ -726,7 +726,14 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
                 if let Some(instrumenter_rc) = &self.instrumenter {
                     // instrumenter_mut is &mut Instrumenter here
                     let mut instrumenter_mut = instrumenter_rc.borrow_mut();
-                    instrumenter_mut.semantic_input = semantic_input;
+                    let current_depth = instrumenter_mut.current_vm_depth;
+                    let mut current_instrumenter = DepthInstrumenter::new();
+                    current_instrumenter.semantic_input = semantic_input.clone();
+                    instrumenter_mut
+                        .depth_instrumenter
+                        .entry(current_depth)
+                        .or_insert(current_instrumenter);
+                    // instrumenter_mut.semantic_input = semantic_input;
                     // instrumenter_mut.taint_engine.activate(semantic_input);
                 }
                 // Mutable borrow of self.instrumenter ends here
