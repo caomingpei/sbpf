@@ -23,6 +23,31 @@ use crate::{
 };
 use std::{collections::BTreeMap, fmt::Debug};
 
+use bytemuck::Pod;
+use instrument::Instrumenter;
+use novafuzz_config::MM_INPUT_START;
+use novafuzz_types::{
+    semantic::{AccountAttribute, InputAttribute},
+    SemanticMapping,
+};
+
+/// NovaFuzz Instrumenter Helper
+/// Convert a slice of bytes to a number
+/// Order: Little Endian
+/// Example:
+/// ```
+/// let value = [0xff, 0x00, 0x00, 0x00];
+/// let num = convert_bytes_to_num::<u32>(&value);
+/// assert_eq!(num, 255);
+/// ```
+pub fn convert_bytes_to_num<T>(value: &[u8]) -> T
+where
+    T: Pod + Clone,
+{
+    let bytes = &value[..core::mem::size_of::<T>()];
+    *bytemuck::from_bytes(bytes)
+}
+
 #[cfg(not(feature = "shuttle-test"))]
 use {
     rand::{thread_rng, Rng},
@@ -287,6 +312,8 @@ pub struct EbpfVm<'a, C: ContextObject> {
     pub call_frames: Vec<CallFrame>,
     /// Loader built-in program
     pub loader: Arc<BuiltinProgram<C>>,
+    /// NovaFuzz Instrumenter
+    pub instrumenter: Instrumenter,
     /// TCP port for the debugger interface
     #[cfg(feature = "debugger")]
     pub debug_port: Option<u16>,
@@ -327,9 +354,335 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
             memory_mapping,
             call_frames: vec![CallFrame::default(); config.max_call_depth],
             loader,
+            instrumenter: Instrumenter::new(),
             #[cfg(feature = "debugger")]
             debug_port: None,
         }
+    }
+
+    fn extract_input_from_memory(
+        &self,
+        memory_mapping: &MemoryMapping,
+        start_ptr: usize,
+        end_ptr: usize,
+    ) -> Vec<u8> {
+        let mut input_bytes = Vec::new();
+        for i in start_ptr..end_ptr {
+            match memory_mapping.load::<u8>(i as u64) {
+                ProgramResult::Ok(byte) => {
+                    input_bytes.push(byte as u8);
+                }
+                ProgramResult::Err(e) => {
+                    println!("Can't Parsing input from memory: {}", e);
+                    break;
+                }
+            }
+        }
+        input_bytes
+    }
+
+    fn parse_account(
+        &self,
+        memory_mapping: &MemoryMapping,
+        ptr: &mut usize,
+        idx: u64,
+        mapping: &mut SemanticMapping,
+    ) {
+        let mut input = self.extract_input_from_memory(
+            memory_mapping,
+            MM_INPUT_START as usize + *ptr,
+            MM_INPUT_START as usize + *ptr + 1,
+        );
+        let account_duplicate = convert_bytes_to_num::<u8>(&input.clone());
+        mapping.insert(
+            *ptr as u64,
+            InputAttribute::Account {
+                index: idx,
+                info: AccountAttribute::Duplicate,
+            },
+        );
+        *ptr += 1;
+        if account_duplicate != 0xff_u8 {
+            // 7 bytes padding
+            for i in 0..7 {
+                mapping.insert(
+                    *ptr as u64 + i,
+                    InputAttribute::Account {
+                        index: idx,
+                        info: AccountAttribute::DuplicatePadding(i as u8),
+                    },
+                );
+            }
+            *ptr += 7;
+        } else {
+            input = self.extract_input_from_memory(
+                memory_mapping,
+                MM_INPUT_START as usize + *ptr,
+                MM_INPUT_START as usize + *ptr + 1,
+            );
+            // let account_is_signer = convert_bytes_to_num::<u8>(&input.clone()) == 1;
+            mapping.insert(
+                *ptr as u64,
+                InputAttribute::Account {
+                    index: idx,
+                    info: AccountAttribute::IsSigner,
+                },
+            );
+            *ptr += 1;
+
+            input = self.extract_input_from_memory(
+                memory_mapping,
+                MM_INPUT_START as usize + *ptr,
+                MM_INPUT_START as usize + *ptr + 1,
+            );
+            // let account_is_writable = convert_bytes_to_num::<u8>(&input.clone()) == 1;
+            mapping.insert(
+                *ptr as u64,
+                InputAttribute::Account {
+                    index: idx,
+                    info: AccountAttribute::IsWritable,
+                },
+            );
+            *ptr += 1;
+
+            input = self.extract_input_from_memory(
+                memory_mapping,
+                MM_INPUT_START as usize + *ptr,
+                MM_INPUT_START as usize + *ptr + 1,
+            );
+            // let account_is_executable = convert_bytes_to_num::<u8>(&input.clone()) == 1;
+            mapping.insert(
+                *ptr as u64,
+                InputAttribute::Account {
+                    index: idx,
+                    info: AccountAttribute::IsExecutable,
+                },
+            );
+            *ptr += 1;
+
+            input = self.extract_input_from_memory(
+                memory_mapping,
+                MM_INPUT_START as usize + *ptr,
+                MM_INPUT_START as usize + *ptr + 4,
+            );
+            // let account_padding = convert_bytes_to_num::<[u8; 4]>(&input.clone());
+            for i in 0..4 {
+                mapping.insert(
+                    *ptr as u64 + i,
+                    InputAttribute::Account {
+                        index: idx,
+                        info: AccountAttribute::Padding(i as u8),
+                    },
+                );
+            }
+            *ptr += 4;
+
+            input = self.extract_input_from_memory(
+                memory_mapping,
+                MM_INPUT_START as usize + *ptr,
+                MM_INPUT_START as usize + *ptr + 32,
+            );
+            // let account_pubkey = convert_bytes_to_num::<[u8; 32]>(&input.clone());
+            for i in 0..32 {
+                mapping.insert(
+                    *ptr as u64 + i,
+                    InputAttribute::Account {
+                        index: idx,
+                        info: AccountAttribute::Pubkey(i as u8),
+                    },
+                );
+            }
+            *ptr += 32;
+
+            input = self.extract_input_from_memory(
+                memory_mapping,
+                MM_INPUT_START as usize + *ptr,
+                MM_INPUT_START as usize + *ptr + 32,
+            );
+            // let account_owner_pubkey = convert_bytes_to_num::<[u8; 32]>(&input.clone());
+            for i in 0..32 {
+                mapping.insert(
+                    *ptr as u64 + i,
+                    InputAttribute::Account {
+                        index: idx,
+                        info: AccountAttribute::OwnerPubkey(i as u8),
+                    },
+                );
+            }
+            *ptr += 32;
+            input = self.extract_input_from_memory(
+                memory_mapping,
+                MM_INPUT_START as usize + *ptr,
+                MM_INPUT_START as usize + *ptr + 8,
+            );
+            // let account_lamports = convert_bytes_to_num::<[u8; 8]>(&input.clone());
+            for i in 0..8 {
+                mapping.insert(
+                    *ptr as u64 + i,
+                    InputAttribute::Account {
+                        index: idx,
+                        info: AccountAttribute::Lamports(i as u8),
+                    },
+                );
+            }
+            *ptr += 8;
+            input = self.extract_input_from_memory(
+                memory_mapping,
+                MM_INPUT_START as usize + *ptr,
+                MM_INPUT_START as usize + *ptr + 8,
+            );
+            // let account_data_len = convert_bytes_to_num::<[u8; 8]>(&input.clone());
+            let data_len = convert_bytes_to_num::<u64>(&input.clone());
+            for i in 0..8 {
+                mapping.insert(
+                    *ptr as u64 + i,
+                    InputAttribute::Account {
+                        index: idx,
+                        info: AccountAttribute::DataLen(i as u8),
+                    },
+                );
+            }
+            *ptr += 8;
+
+            input = self.extract_input_from_memory(
+                memory_mapping,
+                MM_INPUT_START as usize + *ptr,
+                MM_INPUT_START as usize + *ptr + data_len as usize,
+            );
+            for i in 0..data_len {
+                mapping.insert(
+                    *ptr as u64 + i,
+                    InputAttribute::Account {
+                        index: idx,
+                        info: AccountAttribute::Data(i as u16),
+                    },
+                );
+            }
+            // let account_data = input.to_vec().clone();
+            *ptr += data_len as usize;
+
+            input = self.extract_input_from_memory(
+                memory_mapping,
+                MM_INPUT_START as usize + *ptr,
+                MM_INPUT_START as usize + *ptr + 10240,
+            );
+            for i in 0..10240 {
+                mapping.insert(
+                    *ptr as u64 + i,
+                    InputAttribute::Account {
+                        index: idx,
+                        info: AccountAttribute::ReallocData(i as u16),
+                    },
+                );
+            }
+            // for i in 0..10240 {
+            //     account.realloc_data[i] = input[i].clone();
+            // }
+            *ptr += 10240;
+
+            if *ptr % 8 != 0 {
+                let align_size = 8 - *ptr % 8;
+                input = self.extract_input_from_memory(
+                    memory_mapping,
+                    MM_INPUT_START as usize + *ptr,
+                    MM_INPUT_START as usize + *ptr + align_size,
+                );
+                // account.align_data = input.to_vec().clone();
+                for i in 0..align_size {
+                    mapping.insert(
+                        *ptr as u64 + i as u64,
+                        InputAttribute::Account {
+                            index: idx,
+                            info: AccountAttribute::AlignData(i as u8),
+                        },
+                    );
+                }
+                *ptr += align_size;
+            }
+
+            input = self.extract_input_from_memory(
+                memory_mapping,
+                MM_INPUT_START as usize + *ptr,
+                MM_INPUT_START as usize + *ptr + 8,
+            );
+            // account.rent_epoch = convert_bytes_to_num::<[u8; 8]>(&input.clone());
+            for i in 0..8 {
+                mapping.insert(
+                    *ptr as u64 + i as u64,
+                    InputAttribute::Account {
+                        index: idx,
+                        info: AccountAttribute::RentEpoch(i as u8),
+                    },
+                );
+            }
+            *ptr += 8;
+        }
+    }
+
+    /// Parse the input from memory
+    /// Construct the input semantic mapping
+    fn parse_input_from_memory(&self, memory_mapping: &MemoryMapping) -> SemanticMapping {
+        let mut top_ptr: usize = 0 as usize;
+        let mut mapping: SemanticMapping = SemanticMapping::default();
+
+        let mut input = self.extract_input_from_memory(
+            memory_mapping,
+            MM_INPUT_START as usize + top_ptr,
+            MM_INPUT_START as usize + top_ptr + 8,
+        );
+        let account_number = convert_bytes_to_num::<u64>(&input.clone());
+        for i in 0..8 {
+            mapping.insert(top_ptr as u64 + i, InputAttribute::NumberAccount);
+        }
+        // let mut accounts: Vec<AccountInfo> = vec![];
+        top_ptr += 8;
+        for idx in 0..account_number {
+            self.parse_account(&memory_mapping, &mut top_ptr, idx, &mut mapping);
+            // accounts.push(account);
+        }
+
+        input = self.extract_input_from_memory(
+            memory_mapping,
+            MM_INPUT_START as usize + top_ptr,
+            MM_INPUT_START as usize + top_ptr + 8,
+        );
+        let instruction_number = convert_bytes_to_num::<u64>(&input.clone());
+        for i in 0..8 {
+            mapping.insert(top_ptr as u64 + i, InputAttribute::NumberInstruction);
+        }
+        top_ptr += 8;
+        // TODO: check if this is correct
+        // let mut input_converted = Input::new(account_number, instruction_number);
+        // input_converted.accounts = accounts.clone();
+
+        input = self.extract_input_from_memory(
+            memory_mapping,
+            MM_INPUT_START as usize + top_ptr,
+            MM_INPUT_START as usize + top_ptr + instruction_number as usize,
+        );
+        // input_converted.instructions = input.clone();
+        for i in 0..instruction_number as u64 {
+            mapping.insert(
+                top_ptr as u64 + i,
+                InputAttribute::Instruction { index: i as u64 },
+            );
+        }
+        top_ptr += instruction_number as usize;
+
+        input = self.extract_input_from_memory(
+            memory_mapping,
+            MM_INPUT_START as usize + top_ptr,
+            MM_INPUT_START as usize + top_ptr + 32,
+        );
+        // input_converted.program_id = convert_bytes_to_num::<[u8; 32]>(&input.clone());
+        for i in 0..32 {
+            mapping.insert(
+                top_ptr as u64 + i,
+                InputAttribute::ProgramId { index: i as u8 },
+            );
+        }
+        top_ptr += 32;
+        mapping
     }
 
     /// Execute the program
@@ -348,8 +701,15 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         self.previous_instruction_meter = initial_insn_count;
         self.due_insn_count = 0;
         self.program_result = ProgramResult::Ok(0);
-        println!("NovaFuzzer VM Input, Entrypoint: {:#x}", self.registers[11]);
-        if interpreted {
+        if true || interpreted {
+            // NovaFuzzer, set to true to always interpret
+
+            let semantic_input = self.parse_input_from_memory(&self.memory_mapping);
+            self.instrumenter.semantic_input = semantic_input;
+            self.instrumenter
+                .taint_engine
+                .activate(&self.instrumenter.semantic_input);
+
             #[cfg(feature = "debugger")]
             let debug_port = self.debug_port.clone();
             let mut interpreter = Interpreter::new(self, executable, self.registers);
