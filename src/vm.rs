@@ -24,7 +24,7 @@ use crate::{
 use std::{collections::BTreeMap, fmt::Debug};
 
 use bytemuck::Pod;
-use instrument::{DepthInstrumenter, DepthManager};
+use instrument::{DataCollector, DepthManager, TraceEngine};
 use novafuzz_config::MM_INPUT_START;
 use novafuzz_types::{
     semantic::{AccountAttribute, InputAttribute},
@@ -711,7 +711,7 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         self.program_result = ProgramResult::Ok(0);
         if true || interpreted {
             // NovaFuzzer, set to true to always interpret
-            println!("NovaFuzzer: interpret: {:?}", self.depth_manager);
+            // println!("NovaFuzzer: interpret: {:?}", self.depth_manager);
             let semantic_input_option = if self.depth_manager.is_some() {
                 // Takes immutable borrow of self, which is okay here
                 Some(self.parse_input_from_memory(&self.memory_mapping))
@@ -719,29 +719,27 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
                 None
             };
 
-            // If input was parsed, update the instrumenter
+            let mut current_collector = DataCollector::new();
+            let mut current_engine = TraceEngine::new();
+
+            // If input was parsed, update the semantic_mapping
             if let Some(semantic_input) = semantic_input_option {
-                // Now, get the mutable borrow again, only when needed.
-                // This borrow is short-lived.
-                if let Some(instrumenter_rc) = &self.depth_manager {
-                    // instrumenter_mut is &mut Instrumenter here
-                    let mut instrumenter_mut = instrumenter_rc.borrow_mut();
-                    let current_depth = instrumenter_mut.current_vm_depth;
-                    let mut current_instrumenter = DepthInstrumenter::new();
-                    current_instrumenter.semantic_input = semantic_input.clone();
-                    instrumenter_mut
-                        .depth_instrumenter
-                        .entry(current_depth)
-                        .or_insert(current_instrumenter);
-                    // instrumenter_mut.semantic_input = semantic_input;
-                    // instrumenter_mut.taint_engine.activate(semantic_input);
-                }
-                // Mutable borrow of self.instrumenter ends here
+                current_collector.semantic_input = semantic_input;
+            }
+
+            if let Some(manager_rc) = &self.depth_manager {
+                let mut manager = manager_rc.borrow_mut();
+                let current_depth = manager.current_vm_depth;
+                manager
+                    .depth_collector
+                    .entry(current_depth)
+                    .or_insert(current_collector);
             }
 
             #[cfg(feature = "debugger")]
             let debug_port = self.debug_port.clone();
-            let mut interpreter = Interpreter::new(self, executable, self.registers);
+            let mut interpreter =
+                Interpreter::new(self, executable, self.registers, &mut current_engine);
             #[cfg(feature = "debugger")]
             if let Some(debug_port) = debug_port {
                 crate::debugger::execute(&mut interpreter, debug_port);
@@ -750,6 +748,16 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
             }
             #[cfg(not(feature = "debugger"))]
             while interpreter.step() {}
+
+            if let Some(manager_rc) = &self.depth_manager {
+                // instrumenter_mut is &mut Instrumenter here
+                let mut manager = manager_rc.borrow_mut();
+                let current_depth = manager.current_vm_depth;
+                manager
+                    .depth_engine
+                    .entry(current_depth)
+                    .or_insert(current_engine);
+            }
         } else {
             #[cfg(all(feature = "jit", not(target_os = "windows"), target_arch = "x86_64"))]
             {

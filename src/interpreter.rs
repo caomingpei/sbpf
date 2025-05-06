@@ -12,6 +12,8 @@
 
 //! Interpreter for eBPF programs.
 
+use instrument::TraceEngine;
+
 use crate::{
     ebpf,
     elf::Executable,
@@ -99,6 +101,7 @@ pub struct Interpreter<'a, 'b, C: ContextObject> {
 
     /// General purpose registers and pc
     pub reg: [u64; 12],
+    trace_engine: &'a mut TraceEngine,
 
     #[cfg(feature = "debugger")]
     pub(crate) debug_state: DebugState,
@@ -112,6 +115,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
         vm: &'a mut EbpfVm<'b, C>,
         executable: &'a Executable<C>,
         registers: [u64; 12],
+        trace_engine: &'a mut TraceEngine,
     ) -> Self {
         let (program_vm_addr, program) = executable.get_text_bytes();
         Self {
@@ -120,6 +124,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             program,
             program_vm_addr,
             reg: registers,
+            trace_engine,
             #[cfg(feature = "debugger")]
             debug_state: DebugState::Continue,
             #[cfg(feature = "debugger")]
