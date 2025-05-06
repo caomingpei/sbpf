@@ -13,6 +13,11 @@
 //! Interpreter for eBPF programs.
 
 use instrument::TraceEngine;
+use novafuzz_config::MM_PROGRAM_TEXT_START;
+use novafuzz_types::{
+    taint::{AddressRecord, InstructionRecord, TaintState},
+    UnifiedAddress,
+};
 
 use crate::{
     ebpf,
@@ -101,7 +106,7 @@ pub struct Interpreter<'a, 'b, C: ContextObject> {
 
     /// General purpose registers and pc
     pub reg: [u64; 12],
-    trace_engine: &'a mut TraceEngine,
+    tracer: &'a mut TraceEngine,
 
     #[cfg(feature = "debugger")]
     pub(crate) debug_state: DebugState,
@@ -115,7 +120,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
         vm: &'a mut EbpfVm<'b, C>,
         executable: &'a Executable<C>,
         registers: [u64; 12],
-        trace_engine: &'a mut TraceEngine,
+        tracer: &'a mut TraceEngine,
     ) -> Self {
         let (program_vm_addr, program) = executable.get_text_bytes();
         Self {
@@ -124,11 +129,110 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             program,
             program_vm_addr,
             reg: registers,
-            trace_engine,
+            tracer,
             #[cfg(feature = "debugger")]
             debug_state: DebugState::Continue,
             #[cfg(feature = "debugger")]
             breakpoints: Vec::new(),
+        }
+    }
+
+    fn taint_reg_compare(
+        &mut self,
+        opcode: u8,
+        src: usize,
+        src_value: &[u8],
+        dst: usize,
+        dst_value: &[u8],
+        addr_length: u8,
+    ) {
+        assert_eq!(
+            src_value.len(),
+            addr_length as usize,
+            "src_value length must match addr_length"
+        );
+        assert_eq!(
+            dst_value.len(),
+            addr_length as usize,
+            "dst_value length must match addr_length"
+        );
+
+        let src_addrs = UnifiedAddress::address_mapping(src as u64, addr_length);
+        let dst_addrs = UnifiedAddress::address_mapping(dst as u64, addr_length);
+        for i in 0..addr_length {
+            let dst_addr = &dst_addrs[i as usize];
+            let dst_taint_state = match self.tracer.taint_engine.state.get(dst_addr) {
+                Some(taint_state) => taint_state,
+                None => &TaintState::Clean,
+            };
+            let src_addr = &src_addrs[i as usize];
+            let mut src_taint_state = match self.tracer.taint_engine.state.get(src_addr) {
+                Some(taint_state) => taint_state,
+                None => &TaintState::Clean,
+            };
+            if dst_taint_state.is_tainted() || src_taint_state.is_tainted() {
+                let src_record =
+                    AddressRecord::new(*src_addr, src_value[i as usize], src_taint_state.clone());
+                let dst_record =
+                    AddressRecord::new(*dst_addr, dst_value[i as usize], dst_taint_state.clone());
+                self.tracer
+                    .taint_engine
+                    .instruction_record
+                    .push(InstructionRecord::new(opcode, src_record, dst_record));
+            }
+        }
+    }
+
+    fn taint_imm_compare(
+        &mut self,
+        opcode: u8,
+        imm_value: &[u8],
+        dst: usize,
+        dst_value: &[u8],
+        addr_length: u8,
+    ){
+        assert_eq!(
+            dst_value.len(),
+            addr_length as usize,
+            "dst_value length must match addr_length"
+        );
+
+        let dst_addrs = UnifiedAddress::address_mapping(dst as u64, addr_length);
+        for i in 0..addr_length {
+            let dst_addr = &dst_addrs[i as usize];
+            let dst_taint_state = match self.tracer.taint_engine.state.get(dst_addr) {
+                Some(taint_state) => taint_state,
+                None => &TaintState::Clean,
+            };
+            if dst_taint_state.is_tainted() {
+                let imm_record =
+                    AddressRecord::new(UnifiedAddress::Memory { address: 0 }, imm_value[i as usize], TaintState::Clean);
+                let dst_record =
+                        AddressRecord::new(*dst_addr, dst_value[i as usize], dst_taint_state.clone());
+                    self.tracer
+                        .taint_engine
+                        .instruction_record
+                        .push(InstructionRecord::new(opcode, imm_record, dst_record));
+            }
+        }
+    }
+
+
+    fn taint_propagate_array(
+        &mut self,
+        ptr_addr: u64,
+        opcode: u8,
+        from: u64,
+        to: u64,
+        length: u8,
+        values: &[u8],
+    ) {
+        let froms = UnifiedAddress::address_mapping(from, length);
+        let tos = UnifiedAddress::address_mapping(to, length);
+        for i in 0..length as usize {
+            self.tracer
+                .taint_engine
+                .propagate(ptr_addr, opcode, froms[i], tos[i], values[i]);
         }
     }
 
@@ -200,6 +304,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::LD_DW_IMM if !self.executable.get_sbpf_version().disable_lddw() => {
                 ebpf::augment_lddw_unchecked(self.program, &mut insn);
                 self.reg[dst] = insn.imm as u64;
+                let dsts = UnifiedAddress::address_mapping(dst as u64, 8);
+                self.tracer.taint_engine.clear_taint_vector(dsts);
                 self.reg[11] += 1;
                 next_pc += 1;
             },
@@ -208,54 +314,74 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::LD_B_REG  if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[src] as i64).wrapping_add(insn.off as i64) as u64;
                 self.reg[dst] = translate_memory_access!(self, load, vm_addr, u8);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, vm_addr, dst as u64, 1, &self.reg[dst].to_le_bytes());
             },
             ebpf::LD_H_REG  if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[src] as i64).wrapping_add(insn.off as i64) as u64;
                 self.reg[dst] = translate_memory_access!(self, load, vm_addr, u16);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, vm_addr, dst as u64, 2, &self.reg[dst].to_le_bytes());
             },
             ebpf::LD_W_REG  if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[src] as i64).wrapping_add(insn.off as i64) as u64;
                 self.reg[dst] = translate_memory_access!(self, load, vm_addr, u32);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, vm_addr, dst as u64, 4, &self.reg[dst].to_le_bytes());
             },
             ebpf::LD_DW_REG if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[src] as i64).wrapping_add(insn.off as i64) as u64;
                 self.reg[dst] = translate_memory_access!(self, load, vm_addr, u64);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, vm_addr, dst as u64, 8, &self.reg[dst].to_le_bytes());
             },
 
             // BPF_ST class
             ebpf::ST_B_IMM  if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u8);
+                self.tracer.taint_engine.clear_taint_vector(
+                    UnifiedAddress::address_mapping(vm_addr, 1),
+                );
             },
             ebpf::ST_H_IMM  if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u16);
+                self.tracer.taint_engine.clear_taint_vector(
+                    UnifiedAddress::address_mapping(vm_addr, 2),
+                );
             },
             ebpf::ST_W_IMM  if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u32);
+                self.tracer.taint_engine.clear_taint_vector(
+                    UnifiedAddress::address_mapping(vm_addr, 4),
+                );
             },
             ebpf::ST_DW_IMM if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u64);
+                self.tracer.taint_engine.clear_taint_vector(
+                    UnifiedAddress::address_mapping(vm_addr, 8),
+                );
             },
 
             // BPF_STX class
             ebpf::ST_B_REG  if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, self.reg[src], vm_addr, u8);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, src as u64, vm_addr, 1, &self.reg[src].to_le_bytes());
             },
             ebpf::ST_H_REG  if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, self.reg[src], vm_addr, u16);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, src as u64, vm_addr, 2, &self.reg[src].to_le_bytes());
             },
             ebpf::ST_W_REG  if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, self.reg[src], vm_addr, u32);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, src as u64, vm_addr, 4, &self.reg[src].to_le_bytes());
             },
             ebpf::ST_DW_REG if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, self.reg[src], vm_addr, u64);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, src as u64, vm_addr, 8, &self.reg[src].to_le_bytes());
             },
 
             // BPF_ALU32_LOAD class
@@ -306,11 +432,17 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
             ebpf::XOR32_IMM  => self.reg[dst] = (self.reg[dst] as u32             ^ insn.imm as u32)      as u64,
             ebpf::XOR32_REG  => self.reg[dst] = (self.reg[dst] as u32             ^ self.reg[src] as u32) as u64,
-            ebpf::MOV32_IMM  => self.reg[dst] = insn.imm as u32 as u64,
-            ebpf::MOV32_REG  => self.reg[dst] = if self.executable.get_sbpf_version().explicit_sign_extension_of_results() {
-                self.reg[src] as i32 as i64 as u64
-            } else {
-                self.reg[src] as u32 as u64
+            ebpf::MOV32_IMM  => {
+                self.reg[dst] = insn.imm as u32 as u64;
+                self.tracer.taint_engine.clear_taint_vector(UnifiedAddress::address_mapping(dst as u64, 8)); // note imm as u32 as u64
+            },
+            ebpf::MOV32_REG  => {
+                self.reg[dst] = if self.executable.get_sbpf_version().explicit_sign_extension_of_results() {
+                    self.reg[src] as i32 as i64 as u64
+                } else {
+                    self.reg[src] as u32 as u64
+                };
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, src as u64, dst as u64, 8, &self.reg[src].to_le_bytes());
             },
             ebpf::ARSH32_IMM => self.reg[dst] = (self.reg[dst] as i32).wrapping_shr(insn.imm as u32)      as u32 as u64,
             ebpf::ARSH32_REG => self.reg[dst] = (self.reg[dst] as i32).wrapping_shr(self.reg[src] as u32) as u32 as u64,
@@ -399,8 +531,14 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
             ebpf::XOR64_IMM  => self.reg[dst] ^= insn.imm as u64,
             ebpf::XOR64_REG  => self.reg[dst] ^= self.reg[src],
-            ebpf::MOV64_IMM  => self.reg[dst] =  insn.imm as u64,
-            ebpf::MOV64_REG  => self.reg[dst] =  self.reg[src],
+            ebpf::MOV64_IMM  => {
+                self.reg[dst] =  insn.imm as u64;
+                self.tracer.taint_engine.clear_taint_vector(UnifiedAddress::address_mapping(dst as u64, 8));
+            },
+            ebpf::MOV64_REG  => {
+                self.reg[dst] =  self.reg[src];
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, src as u64, dst as u64, 8, &self.reg[src].to_le_bytes());
+            }
             ebpf::ARSH64_IMM => self.reg[dst] = (self.reg[dst] as i64).wrapping_shr(insn.imm as u32)      as u64,
             ebpf::ARSH64_REG => self.reg[dst] = (self.reg[dst] as i64).wrapping_shr(self.reg[src] as u32) as u64,
             ebpf::HOR64_IMM if self.executable.get_sbpf_version().disable_lddw() => {
@@ -482,29 +620,115 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
 
             // BPF_JMP class
-            ebpf::JA         =>                                                   { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JEQ_IMM    => if  self.reg[dst] == insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JEQ_REG    => if  self.reg[dst] == self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JGT_IMM    => if  self.reg[dst] >  insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JGT_REG    => if  self.reg[dst] >  self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JGE_IMM    => if  self.reg[dst] >= insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JGE_REG    => if  self.reg[dst] >= self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JLT_IMM    => if  self.reg[dst] <  insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JLT_REG    => if  self.reg[dst] <  self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JLE_IMM    => if  self.reg[dst] <= insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JLE_REG    => if  self.reg[dst] <= self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JSET_IMM   => if  self.reg[dst] &  insn.imm as u64 != 0         { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JSET_REG   => if  self.reg[dst] &  self.reg[src] != 0           { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JNE_IMM    => if  self.reg[dst] != insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JNE_REG    => if  self.reg[dst] != self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JSGT_IMM   => if (self.reg[dst] as i64) >  insn.imm             { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JSGT_REG   => if (self.reg[dst] as i64) >  self.reg[src] as i64 { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JSGE_IMM   => if (self.reg[dst] as i64) >= insn.imm             { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JSGE_REG   => if (self.reg[dst] as i64) >= self.reg[src] as i64 { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JSLT_IMM   => if (self.reg[dst] as i64) <  insn.imm             { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JSLT_REG   => if (self.reg[dst] as i64) <  self.reg[src] as i64 { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JSLE_IMM   => if (self.reg[dst] as i64) <= insn.imm             { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
-            ebpf::JSLE_REG   => if (self.reg[dst] as i64) <= self.reg[src] as i64 { next_pc = (next_pc as i64 + insn.off as i64) as u64; },
+            ebpf::JA         =>                                                   { 
+                let target = (next_pc as i64 + insn.off as i64) as u64; 
+                self.tracer.jump_tracer.trace_jump(self.reg[11], target);
+                next_pc = target;
+            },
+            ebpf::JEQ_IMM    => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let imm_values = &insn.imm.to_le_bytes();
+                self.taint_imm_compare(insn.opc, imm_values, dst, dst_values, 8);
+
+                if  self.reg[dst] == insn.imm as u64             { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JEQ_REG    => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let src_values = &self.reg[src].to_le_bytes();
+                self.taint_reg_compare(insn.opc, src, src_values, dst, dst_values, 8);
+
+                if  self.reg[dst] == self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JGT_IMM    => {
+                if  self.reg[dst] >  insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JGT_REG    => {
+                if  self.reg[dst] >  self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JGE_IMM    => {
+                if  self.reg[dst] >= insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JGE_REG    => {
+                if  self.reg[dst] >= self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JLT_IMM    => {
+                if  self.reg[dst] <  insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JLT_REG    => {
+                if  self.reg[dst] <  self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JLE_IMM    => {
+                if  self.reg[dst] <= insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JLE_REG    => {
+                if  self.reg[dst] <= self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JSET_IMM   => {
+                if  self.reg[dst] &  insn.imm as u64 != 0         { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JSET_REG   => {
+                if  self.reg[dst] &  self.reg[src] != 0           { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JNE_IMM    => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let imm_values = &insn.imm.to_le_bytes();
+                self.taint_imm_compare(insn.opc, imm_values, dst, dst_values, 8);
+
+                if  self.reg[dst] != insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JNE_REG    => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let src_values = &self.reg[src].to_le_bytes();
+                self.taint_reg_compare(insn.opc, src, src_values, dst, dst_values, 8);
+
+                if  self.reg[dst] != self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JSGT_IMM   => {
+                if (self.reg[dst] as i64) >  insn.imm             { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JSGT_REG   => {
+                if (self.reg[dst] as i64) >  self.reg[src] as i64 { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JSGE_IMM   => {
+                if (self.reg[dst] as i64) >= insn.imm             { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JSGE_REG   => {
+                if (self.reg[dst] as i64) >= self.reg[src] as i64 { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JSLT_IMM   => {
+                if (self.reg[dst] as i64) <  insn.imm             { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JSLT_REG   => {
+                if (self.reg[dst] as i64) <  self.reg[src] as i64 { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JSLE_IMM   => {
+                if (self.reg[dst] as i64) <= insn.imm             { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
+            ebpf::JSLE_REG   => {
+                if (self.reg[dst] as i64) <= self.reg[src] as i64 { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
+                self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
+            },
 
             ebpf::CALL_REG   => {
                 let target_pc = if self.executable.get_sbpf_version().callx_uses_src_reg() {
