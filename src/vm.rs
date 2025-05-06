@@ -24,7 +24,7 @@ use crate::{
 use std::{collections::BTreeMap, fmt::Debug};
 
 use bytemuck::Pod;
-use instrument::{DepthInstrumenter, Instrumenter};
+use instrument::{DepthInstrumenter, DepthManager};
 use novafuzz_config::MM_INPUT_START;
 use novafuzz_types::{
     semantic::{AccountAttribute, InputAttribute},
@@ -315,7 +315,7 @@ pub struct EbpfVm<'a, C: ContextObject> {
     /// Loader built-in program
     pub loader: Arc<BuiltinProgram<C>>,
     /// NovaFuzz Instrumenter
-    pub instrumenter: Option<Rc<RefCell<Instrumenter>>>,
+    pub depth_manager: Option<Rc<RefCell<DepthManager>>>,
     /// TCP port for the debugger interface
     #[cfg(feature = "debugger")]
     pub debug_port: Option<u16>,
@@ -329,11 +329,11 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         context_object: &'a mut C,
         mut memory_mapping: MemoryMapping<'a>,
         stack_len: usize,
-        instrumenter: Option<Rc<RefCell<Instrumenter>>>,
+        depth_manager: Option<Rc<RefCell<DepthManager>>>,
     ) -> Self {
         // NovaFuzz: record the depth of vm creation
-        if let Some(instrumenter_rc) = &instrumenter {
-            instrumenter_rc.borrow_mut().current_vm_depth += 1;
+        if let Some(depth_manager_rc) = &depth_manager {
+            depth_manager_rc.borrow_mut().current_vm_depth += 1;
         }
 
         let config = loader.get_config();
@@ -362,7 +362,7 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
             memory_mapping,
             call_frames: vec![CallFrame::default(); config.max_call_depth],
             loader,
-            instrumenter,
+            depth_manager,
             #[cfg(feature = "debugger")]
             debug_port: None,
         }
@@ -711,8 +711,8 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         self.program_result = ProgramResult::Ok(0);
         if true || interpreted {
             // NovaFuzzer, set to true to always interpret
-            println!("NovaFuzzer: interpret: {:?}", self.instrumenter);
-            let semantic_input_option = if self.instrumenter.is_some() {
+            println!("NovaFuzzer: interpret: {:?}", self.depth_manager);
+            let semantic_input_option = if self.depth_manager.is_some() {
                 // Takes immutable borrow of self, which is okay here
                 Some(self.parse_input_from_memory(&self.memory_mapping))
             } else {
@@ -723,7 +723,7 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
             if let Some(semantic_input) = semantic_input_option {
                 // Now, get the mutable borrow again, only when needed.
                 // This borrow is short-lived.
-                if let Some(instrumenter_rc) = &self.instrumenter {
+                if let Some(instrumenter_rc) = &self.depth_manager {
                     // instrumenter_mut is &mut Instrumenter here
                     let mut instrumenter_mut = instrumenter_rc.borrow_mut();
                     let current_depth = instrumenter_mut.current_vm_depth;
