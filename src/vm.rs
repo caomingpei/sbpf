@@ -724,6 +724,7 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
 
             // If input was parsed, update the semantic_mapping
             if let Some(semantic_input) = semantic_input_option {
+                current_engine.taint_engine.activate(&semantic_input);
                 current_collector.semantic_input = semantic_input;
             }
 
