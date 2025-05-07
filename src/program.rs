@@ -317,6 +317,75 @@ impl<C: ContextObject> std::fmt::Debug for BuiltinProgram<C> {
 /// Generates an adapter for a BuiltinFunction between the Rust and the VM interface
 #[macro_export]
 macro_rules! declare_builtin_function {
+    // NovaFuzzer, To match cpi_common, we need to pass in the instrumenter
+    ($(#[$attr:meta])* $name:ident $(<$($generic_ident:tt : $generic_type:tt),+>)?, fn rust(
+        $vm:ident : &mut $ContextObject:ty,
+        $arg_a:ident : u64,
+        $arg_b:ident : u64,
+        $arg_c:ident : u64,
+        $arg_d:ident : u64,
+        $arg_e:ident : u64,
+        $memory_mapping:ident : &mut $MemoryMapping:ty,
+    ) -> $Result:ty { cpi_common $($rest:tt)* }) => {
+        $(#[$attr])*
+        pub struct $name {}
+        impl $name {
+            /// Rust interface
+            pub fn rust $(<$($generic_ident : $generic_type),+>)? (
+                $vm: &mut $ContextObject,
+                $arg_a: u64,
+                $arg_b: u64,
+                $arg_c: u64,
+                $arg_d: u64,
+                $arg_e: u64,
+                $memory_mapping: &mut $MemoryMapping,
+                instrument_collector: &mut DataCollector,
+            ) -> $Result {
+                cpi_common::<Self>($vm, $arg_a, $arg_b, $arg_c, $arg_d, $arg_e, $memory_mapping, instrument_collector)
+            }
+            /// VM interface
+            #[allow(clippy::too_many_arguments)]
+            pub fn vm $(<$($generic_ident : $generic_type),+>)? (
+                $vm: *mut $crate::vm::EbpfVm<$ContextObject>,
+                $arg_a: u64,
+                $arg_b: u64,
+                $arg_c: u64,
+                $arg_d: u64,
+                $arg_e: u64,
+            ) {
+                use $crate::vm::ContextObject;
+                let vm = unsafe {
+                    &mut *($vm.cast::<u64>().offset(-($crate::vm::get_runtime_environment_key() as isize)).cast::<$crate::vm::EbpfVm<$ContextObject>>())
+                };
+                let config = vm.loader.get_config();
+                if config.enable_instruction_meter {
+                    vm.context_object_pointer.consume(vm.previous_instruction_meter - vm.due_insn_count);
+                }
+
+                let mut instrument_collector_clone = DataCollector::new();
+                if let(Some(rc_depth_manager)) = &vm.depth_manager {
+                    let mut depth_manager_instance_ref = rc_depth_manager.borrow_mut();
+                    instrument_collector_clone = depth_manager_instance_ref.get_current_collector_mut().clone();
+                }
+
+                let converted_result: $crate::error::ProgramResult = Self::rust $(::<$($generic_ident),+>)?(
+                    vm.context_object_pointer, $arg_a, $arg_b, $arg_c, $arg_d, $arg_e, &mut vm.memory_mapping, &mut instrument_collector_clone,
+                ).map_err(|err| $crate::error::EbpfError::SyscallError(err)).into();
+
+                // NovaFuzz: Chain Update
+                if let(Some(rc_depth_manager)) = &vm.depth_manager {
+                    let mut depth_manager_instance_ref = rc_depth_manager.borrow_mut();
+                    depth_manager_instance_ref.set_current_collector(instrument_collector_clone);
+                }
+                vm.program_result = converted_result;
+                if config.enable_instruction_meter {
+                    vm.previous_instruction_meter = vm.context_object_pointer.get_remaining();
+                }
+            }
+        }
+    };
+
+
     ($(#[$attr:meta])* $name:ident $(<$($generic_ident:tt : $generic_type:tt),+>)?, fn rust(
         $vm:ident : &mut $ContextObject:ty,
         $arg_a:ident : u64,
