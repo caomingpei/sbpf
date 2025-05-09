@@ -14,9 +14,8 @@
 
 use instrument::TraceEngine;
 use novafuzz_config::MM_PROGRAM_TEXT_START;
-use novafuzz_types::{
-    taint::{AddressRecord, InstructionRecord, TaintState},
-    UnifiedAddress,
+use novafuzz_types::vm::{
+    AddressRecord, InstructionRecord, TaintState, UnifiedAddress,
 };
 
 use crate::{
