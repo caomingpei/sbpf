@@ -641,42 +641,82 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JGT_IMM    => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let imm_values = &insn.imm.to_le_bytes();
+                self.taint_imm_compare(insn.opc, imm_values, dst, dst_values, 8);
+
                 if  self.reg[dst] >  insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JGT_REG    => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let src_values = &self.reg[src].to_le_bytes();
+                self.taint_reg_compare(insn.opc, src, src_values, dst, dst_values, 8);
+
                 if  self.reg[dst] >  self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JGE_IMM    => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let imm_values = &insn.imm.to_le_bytes();
+                self.taint_imm_compare(insn.opc, imm_values, dst, dst_values, 8);
+                
                 if  self.reg[dst] >= insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JGE_REG    => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let src_values = &self.reg[src].to_le_bytes();
+                self.taint_reg_compare(insn.opc, src, src_values, dst, dst_values, 8);
+                
                 if  self.reg[dst] >= self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JLT_IMM    => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let imm_values = &insn.imm.to_le_bytes();
+                self.taint_imm_compare(insn.opc, imm_values, dst, dst_values, 8);
+                
                 if  self.reg[dst] <  insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JLT_REG    => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let src_values = &self.reg[src].to_le_bytes();
+                self.taint_reg_compare(insn.opc, src, src_values, dst, dst_values, 8);
+                
                 if  self.reg[dst] <  self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JLE_IMM    => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let imm_values = &insn.imm.to_le_bytes();
+                self.taint_imm_compare(insn.opc, imm_values, dst, dst_values, 8);
+                
                 if  self.reg[dst] <= insn.imm as u64              { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JLE_REG    => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let src_values = &self.reg[src].to_le_bytes();
+                self.taint_reg_compare(insn.opc, src, src_values, dst, dst_values, 8);
+                
                 if  self.reg[dst] <= self.reg[src]                { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JSET_IMM   => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let imm_values = &insn.imm.to_le_bytes();
+                self.taint_imm_compare(insn.opc, imm_values, dst, dst_values, 8);
+
                 if  self.reg[dst] &  insn.imm as u64 != 0         { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JSET_REG   => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let src_values = &self.reg[src].to_le_bytes();
+                self.taint_reg_compare(insn.opc, src, src_values, dst, dst_values, 8);
+                
                 if  self.reg[dst] &  self.reg[src] != 0           { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
@@ -697,34 +737,66 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JSGT_IMM   => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let imm_values = &insn.imm.to_le_bytes();
+                self.taint_imm_compare(insn.opc, imm_values, dst, dst_values, 8);
+                
                 if (self.reg[dst] as i64) >  insn.imm             { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JSGT_REG   => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let src_values = &self.reg[src].to_le_bytes();
+                self.taint_reg_compare(insn.opc, src, src_values, dst, dst_values, 8);
+                
                 if (self.reg[dst] as i64) >  self.reg[src] as i64 { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JSGE_IMM   => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let imm_values = &insn.imm.to_le_bytes();
+                self.taint_imm_compare(insn.opc, imm_values, dst, dst_values, 8);
+                
                 if (self.reg[dst] as i64) >= insn.imm             { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JSGE_REG   => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let src_values = &self.reg[src].to_le_bytes();
+                self.taint_reg_compare(insn.opc, src, src_values, dst, dst_values, 8);
+                
                 if (self.reg[dst] as i64) >= self.reg[src] as i64 { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JSLT_IMM   => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let imm_values = &insn.imm.to_le_bytes();
+                self.taint_imm_compare(insn.opc, imm_values, dst, dst_values, 8);
+                
                 if (self.reg[dst] as i64) <  insn.imm             { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JSLT_REG   => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let src_values = &self.reg[src].to_le_bytes();
+                self.taint_reg_compare(insn.opc, src, src_values, dst, dst_values, 8);
+                
                 if (self.reg[dst] as i64) <  self.reg[src] as i64 { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JSLE_IMM   => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let imm_values = &insn.imm.to_le_bytes();
+                self.taint_imm_compare(insn.opc, imm_values, dst, dst_values, 8);
+                
                 if (self.reg[dst] as i64) <= insn.imm             { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
             ebpf::JSLE_REG   => {
+                let dst_values = &self.reg[dst].to_le_bytes();
+                let src_values = &self.reg[src].to_le_bytes();
+                self.taint_reg_compare(insn.opc, src, src_values, dst, dst_values, 8);
+                
                 if (self.reg[dst] as i64) <= self.reg[src] as i64 { next_pc = (next_pc as i64 + insn.off as i64) as u64; }
                 self.tracer.jump_tracer.trace_jump(self.reg[11], next_pc);
             },
