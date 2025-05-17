@@ -25,7 +25,7 @@ use std::{collections::BTreeMap, fmt::Debug};
 
 use bytemuck::Pod;
 use instrument::{DataCollector, DepthManager, TraceEngine};
-use novafuzz_config::MM_INPUT_START;
+use novafuzz_types::consts::MM_INPUT_START;
 use novafuzz_types::vm::{AccountAttribute, InputAttribute, SemanticMapping};
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -30,7 +30,6 @@ rustc-demangle = "0.1"
 shuttle = { version = "0.7.1", optional = true }
 thiserror = "1.0.26"
 novafuzz-types = { path = "../types"}
-novafuzz-config = { path = "../config" }
 instrument = { path = "../instrument" }
 bytemuck = "1.23.0"
 

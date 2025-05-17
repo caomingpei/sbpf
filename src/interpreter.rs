@@ -13,7 +13,7 @@
 //! Interpreter for eBPF programs.
 
 use instrument::TraceEngine;
-use novafuzz_config::MM_PROGRAM_TEXT_START;
+use novafuzz_types::consts::MM_PROGRAM_TEXT_START;
 use novafuzz_types::vm::{
     AddressRecord, InstructionRecord, TaintState, UnifiedAddress,
 };
