@@ -372,12 +372,20 @@ macro_rules! declare_builtin_function {
                     vm.context_object_pointer, $arg_a, $arg_b, $arg_c, $arg_d, $arg_e, &mut vm.memory_mapping, &mut instrument_collector_clone,
                 ).map_err(|err| $crate::error::EbpfError::SyscallError(err)).into();
 
+                let syscall_name_str = stringify!($name);
+                if converted_result.is_ok() {
+                    instrument_collector_clone.invoke_record.add_syscall_result(syscall_name_str.to_string(), true);
+                } else {
+                    instrument_collector_clone.invoke_record.add_syscall_result(syscall_name_str.to_string(), false);
+                }
+
+                vm.program_result = converted_result;
+
                 // NovaFuzz: Chain Update
                 if let(Some(rc_depth_manager)) = &vm.depth_manager {
                     let mut depth_manager_instance_ref = rc_depth_manager.borrow_mut();
                     depth_manager_instance_ref.set_current_collector(instrument_collector_clone);
                 }
-                vm.program_result = converted_result;
                 if config.enable_instruction_meter {
                     vm.previous_instruction_meter = vm.context_object_pointer.get_remaining();
                 }
@@ -441,12 +449,20 @@ macro_rules! declare_builtin_function {
                     vm.context_object_pointer, $arg_a, $arg_b, $arg_c, $arg_d, $arg_e, &mut vm.memory_mapping, &mut instrument_collector_clone,
                 ).map_err(|err| $crate::error::EbpfError::SyscallError(err)).into();
 
+                let syscall_name_str = stringify!($name);
+                if converted_result.is_ok() {
+                    instrument_collector_clone.invoke_record.add_syscall_result(syscall_name_str.to_string(), true);
+                } else {
+                    instrument_collector_clone.invoke_record.add_syscall_result(syscall_name_str.to_string(), false);
+                }
+
+                vm.program_result = converted_result;
+
                 // NovaFuzz: Chain Update
                 if let(Some(rc_depth_manager)) = &vm.depth_manager {
                     let mut depth_manager_instance_ref = rc_depth_manager.borrow_mut();
                     depth_manager_instance_ref.set_current_collector(instrument_collector_clone);
                 }
-                vm.program_result = converted_result;
                 if config.enable_instruction_meter {
                     vm.previous_instruction_meter = vm.context_object_pointer.get_remaining();
                 }
@@ -497,6 +513,11 @@ macro_rules! declare_builtin_function {
                 if config.enable_instruction_meter {
                     vm.context_object_pointer.consume(vm.previous_instruction_meter - vm.due_insn_count);
                 }
+
+                // // NovaFuzz: Test the normal syscall
+                // let name = stringify!($name);
+                // println!("Syscall: {}", name);
+
                 let converted_result: $crate::error::ProgramResult = Self::rust $(::<$($generic_ident),+>)?(
                     vm.context_object_pointer, $arg_a, $arg_b, $arg_c, $arg_d, $arg_e, &mut vm.memory_mapping,
                 ).map_err(|err| $crate::error::EbpfError::SyscallError(err)).into();
