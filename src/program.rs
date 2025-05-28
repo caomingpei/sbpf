@@ -517,6 +517,10 @@ macro_rules! declare_builtin_function {
                 // // NovaFuzz: Test the normal syscall
                 // let name = stringify!($name);
                 // println!("Syscall: {}", name);
+                // if let(Some(rc_depth_manager)) = &vm.depth_manager {
+                //     let mut depth_manager_instance_ref = rc_depth_manager.borrow_mut();
+                //     println!("Syscall: {}, Depth: {}", stringify!($name), depth_manager_instance_ref.current_vm_depth);
+                // }
 
                 let converted_result: $crate::error::ProgramResult = Self::rust $(::<$($generic_ident),+>)?(
                     vm.context_object_pointer, $arg_a, $arg_b, $arg_c, $arg_d, $arg_e, &mut vm.memory_mapping,

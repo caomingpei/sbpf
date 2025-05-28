@@ -11,6 +11,12 @@
 // copied, modified, or distributed except according to those terms.
 
 //! Interpreter for eBPF programs.
+//! TODO: REFACTOR - INSTRUMENTATION MODIFICATIONS:
+//! This interpreter has been modified to support NovaFuzz's taint tracking and coverage.
+//! Key additions:
+//! - TraceEngine integration for recording execution traces
+//! - Taint tracking for data flow analysis
+//! - Instruction comparison recording for semantic feedback
 
 use instrument::TraceEngine;
 use novafuzz_types::consts::MM_PROGRAM_TEXT_START;
@@ -105,6 +111,8 @@ pub struct Interpreter<'a, 'b, C: ContextObject> {
 
     /// General purpose registers and pc
     pub reg: [u64; 12],
+    // TODO: REFACTOR - INSTRUMENTATION ADDITION:
+    // TraceEngine tracks both control flow (jumps) and data flow (taint)
     tracer: &'a mut TraceEngine,
 
     #[cfg(feature = "debugger")]
@@ -802,6 +810,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
 
             ebpf::CALL_REG   => {
+                let from_pc = self.reg[11] as u64; //For instrument.
                 let target_pc = if self.executable.get_sbpf_version().callx_uses_src_reg() {
                     self.reg[src]
                 } else {
@@ -811,6 +820,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     return false;
                 }
                 check_pc!(self, next_pc, target_pc.wrapping_sub(self.program_vm_addr) / ebpf::INSN_SIZE as u64);
+                self.tracer.jump_tracer.trace_jump(from_pc, next_pc);
                 if self.executable.get_sbpf_version().static_syscalls() && self.executable.get_function_registry().lookup_by_key(next_pc as u32).is_none() {
                     throw_error!(self, EbpfError::UnsupportedInstruction);
                 }
@@ -819,6 +829,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             // Do not delegate the check to the verifier, since self.registered functions can be
             // changed after the program has been verified.
             ebpf::CALL_IMM => {
+                let from_pc = self.reg[11] as u64; //For instrument.
                 if let (false, Some((_, function))) =
                         (self.executable.get_sbpf_version().static_syscalls(),
                             self.executable.get_loader().get_function_registry().lookup_by_key(insn.imm as u32)) {
@@ -841,6 +852,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                         return false;
                     }
                     check_pc!(self, next_pc, target_pc as u64);
+                    self.tracer.jump_tracer.trace_jump(from_pc, next_pc);
                 } else {
                     throw_error!(self, EbpfError::UnsupportedInstruction);
                 }
@@ -858,6 +870,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
             ebpf::RETURN
             | ebpf::EXIT       => {
+                let from_pc = self.reg[11] as u64; //For instrument.
                 if (insn.opc == ebpf::EXIT && self.executable.get_sbpf_version().static_syscalls())
                     || (insn.opc == ebpf::RETURN && !self.executable.get_sbpf_version().static_syscalls()) {
                     throw_error!(self, EbpfError::UnsupportedInstruction);
@@ -878,6 +891,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     ..ebpf::FIRST_SCRATCH_REG + ebpf::SCRATCH_REGS]
                     .copy_from_slice(&frame.caller_saved_registers);
                 check_pc!(self, next_pc, frame.target_pc);
+                self.tracer.jump_tracer.trace_jump(from_pc, next_pc);
             }
             _ => throw_error!(self, EbpfError::UnsupportedInstruction),
         }
