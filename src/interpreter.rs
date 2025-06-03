@@ -405,6 +405,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::LD_1B_REG  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[src] as i64).wrapping_add(insn.off as i64) as u64;
                 self.reg[dst] = translate_memory_access!(self, load, vm_addr, u8);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, vm_addr, dst as u64, 1, &self.reg[dst].to_le_bytes());
             },
             ebpf::DIV32_IMM  if !self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] = (self.reg[dst] as u32             / insn.imm as u32)      as u64,
             ebpf::DIV32_REG  if !self.executable.get_sbpf_version().enable_pqr() => {
@@ -414,6 +415,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::LD_2B_REG  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[src] as i64).wrapping_add(insn.off as i64) as u64;
                 self.reg[dst] = translate_memory_access!(self, load, vm_addr, u16);
+                 self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, vm_addr, dst as u64, 2, &self.reg[dst].to_le_bytes());
             },
             ebpf::OR32_IMM   => self.reg[dst] = (self.reg[dst] as u32             | insn.imm as u32)      as u64,
             ebpf::OR32_REG   => self.reg[dst] = (self.reg[dst] as u32             | self.reg[src] as u32) as u64,
@@ -427,6 +429,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::LD_4B_REG  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[src] as i64).wrapping_add(insn.off as i64) as u64;
                 self.reg[dst] = translate_memory_access!(self, load, vm_addr, u32);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, vm_addr, dst as u64, 4, &self.reg[dst].to_le_bytes());
             },
             ebpf::MOD32_IMM  if !self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] = (self.reg[dst] as u32             % insn.imm as u32)      as u64,
             ebpf::MOD32_REG  if !self.executable.get_sbpf_version().enable_pqr() => {
@@ -436,6 +439,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::LD_8B_REG  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[src] as i64).wrapping_add(insn.off as i64) as u64;
                 self.reg[dst] = translate_memory_access!(self, load, vm_addr, u64);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, vm_addr, dst as u64, 8, &self.reg[dst].to_le_bytes());
             },
             ebpf::XOR32_IMM  => self.reg[dst] = (self.reg[dst] as u32             ^ insn.imm as u32)      as u64,
             ebpf::XOR32_REG  => self.reg[dst] = (self.reg[dst] as u32             ^ self.reg[src] as u32) as u64,
@@ -487,16 +491,19 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::ST_1B_IMM  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u8);
+                self.tracer.taint_engine.clear_taint_vector(UnifiedAddress::address_mapping(vm_addr, 1));
             },
             ebpf::MUL64_REG  if !self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] =  self.reg[dst].wrapping_mul(self.reg[src]),
             ebpf::ST_1B_REG  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, self.reg[src], vm_addr, u8);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, src as u64, vm_addr, 1, &self.reg[src].to_le_bytes());
             },
             ebpf::DIV64_IMM  if !self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] /= insn.imm as u64,
             ebpf::ST_2B_IMM  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u16);
+                self.tracer.taint_engine.clear_taint_vector(UnifiedAddress::address_mapping(vm_addr, 2));
             },
             ebpf::DIV64_REG  if !self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideByZero; self, self.reg[src], u64);
@@ -505,6 +512,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::ST_2B_REG  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, self.reg[src], vm_addr, u16);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, src as u64, vm_addr, 2, &self.reg[src].to_le_bytes());
             },
             ebpf::OR64_IMM   => self.reg[dst] |= insn.imm as u64,
             ebpf::OR64_REG   => self.reg[dst] |= self.reg[src],
@@ -517,16 +525,19 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::ST_4B_IMM  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u32);
+                self.tracer.taint_engine.clear_taint_vector(UnifiedAddress::address_mapping(vm_addr, 4));
             },
             ebpf::NEG64      if !self.executable.get_sbpf_version().disable_neg() => self.reg[dst] = (self.reg[dst] as i64).wrapping_neg() as u64,
             ebpf::ST_4B_REG  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, self.reg[src], vm_addr, u32);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, src as u64, vm_addr, 4, &self.reg[src].to_le_bytes());
             },
             ebpf::MOD64_IMM  if !self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] %= insn.imm as u64,
             ebpf::ST_8B_IMM  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u64);
+                self.tracer.taint_engine.clear_taint_vector(UnifiedAddress::address_mapping(vm_addr, 8));
             },
             ebpf::MOD64_REG  if !self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideByZero; self, self.reg[src], u64);
@@ -535,6 +546,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::ST_8B_REG  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, self.reg[src], vm_addr, u64);
+                self.taint_propagate_array((insn.ptr * ebpf::INSN_SIZE) as u64 + MM_PROGRAM_TEXT_START, insn.opc, src as u64, vm_addr, 8, &self.reg[src].to_le_bytes());
             },
             ebpf::XOR64_IMM  => self.reg[dst] ^= insn.imm as u64,
             ebpf::XOR64_REG  => self.reg[dst] ^= self.reg[src],
