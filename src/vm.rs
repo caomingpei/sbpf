@@ -11,7 +11,6 @@
 // copied, modified, or distributed except according to those terms.
 
 //! Virtual machine for eBPF programs.
-
 use crate::{
     ebpf,
     elf::Executable,
@@ -21,7 +20,13 @@ use crate::{
     program::{BuiltinFunction, BuiltinProgram, FunctionRegistry, SBPFVersion},
     static_analysis::Analysis,
 };
-use std::{collections::BTreeMap, fmt::Debug};
+use std::{
+    collections::BTreeMap,
+    fmt::{Debug, Error},
+};
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[cfg(feature = "shuttle-test")]
 use shuttle::sync::Arc;
@@ -40,6 +45,10 @@ use shuttle::rand::{thread_rng, Rng};
 const PROGRAM_ENVIRONMENT_KEY_SHIFT: u32 = 4;
 #[cfg(feature = "jit")]
 static RUNTIME_ENVIRONMENT_KEY: std::sync::OnceLock<i32> = std::sync::OnceLock::<i32>::new();
+
+use novafuzz_instrument::types::TaintSourceMap;
+/// NovaFuzz import taint source map
+use novafuzz_instrument::Instrumenter;
 
 /// Returns (and if not done before generates) the encryption key for the VM pointer
 pub fn get_runtime_environment_key() -> i32 {
@@ -293,6 +302,8 @@ pub struct EbpfVm<'a, C: ContextObject> {
     pub program_result: ProgramResult,
     /// MemoryMapping inlined
     pub memory_mapping: MemoryMapping<'a>,
+    /// NovaFuzz: Instrumenter
+    pub instrumenter: Rc<RefCell<Instrumenter>>,
     /// Stack of CallFrames used by the Interpreter
     pub call_frames: Vec<CallFrame>,
     /// Loader built-in program
@@ -303,6 +314,44 @@ pub struct EbpfVm<'a, C: ContextObject> {
 }
 
 impl<'a, C: ContextObject> EbpfVm<'a, C> {
+    /// NovaFuzz: Create taint source map from memory mapping
+    fn create_taint_source_map(
+        memory_mapping: &MemoryMapping<'a>,
+    ) -> Result<TaintSourceMap, String> {
+        use crate::{ebpf, memory_region::AccessType};
+        use novafuzz_instrument::types::MemoryRegionInfo;
+
+        // Create read closures
+        let read_u8 = |addr: u64| -> Option<u8> {
+            match memory_mapping.map(AccessType::Load, addr, 1) {
+                ProgramResult::Ok(host) => Some(unsafe { *(host as *const u8) }),
+                ProgramResult::Err(_) => None,
+            }
+        };
+
+        let read_u64 = |addr: u64| -> Option<u64> {
+            match memory_mapping.map(AccessType::Load, addr, 8) {
+                ProgramResult::Ok(host) => {
+                    Some(unsafe { std::ptr::read_unaligned(host as *const u64) })
+                }
+                ProgramResult::Err(_) => None,
+            }
+        };
+        // Extract region info
+        let region_infos = memory_mapping
+            .get_regions()
+            .iter()
+            .map(|r| MemoryRegionInfo {
+                vm_addr: r.vm_addr,
+                len: r.len,
+                writable: r.writable,
+                payload: r.access_violation_handler_payload,
+            });
+
+        // Create TaintSourceMap
+        TaintSourceMap::from_memory_regions(ebpf::MM_INPUT_START, read_u8, read_u64, region_infos)
+    }
+
     /// Creates a new virtual machine instance.
     pub fn new(
         loader: Arc<BuiltinProgram<C>>,
@@ -335,6 +384,48 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
             registers,
             program_result: ProgramResult::Ok(0),
             memory_mapping,
+            instrumenter: Rc::new(RefCell::new(Instrumenter::new())),
+            call_frames: vec![CallFrame::default(); config.max_call_depth],
+            loader,
+            #[cfg(feature = "debugger")]
+            debug_port: None,
+        }
+    }
+
+    /// Creates a new virtual machine instance with instrumenter.
+    pub fn new_with_instrumenter(
+        loader: Arc<BuiltinProgram<C>>,
+        sbpf_version: SBPFVersion,
+        context_object: &'a mut C,
+        mut memory_mapping: MemoryMapping<'a>,
+        stack_len: usize,
+        instrumenter: Rc<RefCell<Instrumenter>>,
+    ) -> Self {
+        let config = loader.get_config();
+        let mut registers = [0u64; 12];
+        registers[ebpf::FRAME_PTR_REG] =
+            ebpf::MM_STACK_START.saturating_add(if sbpf_version.dynamic_stack_frames() {
+                // the stack is fully descending, frames start as empty and change size anytime r11 is modified
+                stack_len
+            } else {
+                // within a frame the stack grows down, but frames are ascending
+                config.stack_frame_size
+            } as u64);
+        if !config.enable_address_translation {
+            memory_mapping = MemoryMapping::new_identity();
+        }
+        EbpfVm {
+            host_stack_pointer: std::ptr::null_mut(),
+            call_depth: 0,
+            context_object_pointer: context_object,
+            previous_instruction_meter: 0,
+            due_insn_count: 0,
+            stopwatch_numerator: 0,
+            stopwatch_denominator: 0,
+            registers,
+            program_result: ProgramResult::Ok(0),
+            memory_mapping,
+            instrumenter,
             call_frames: vec![CallFrame::default(); config.max_call_depth],
             loader,
             #[cfg(feature = "debugger")]
@@ -351,13 +442,24 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         interpreted: bool,
     ) -> (u64, ProgramResult) {
         debug_assert!(Arc::ptr_eq(&self.loader, executable.get_loader()));
+
+        /// NovaFuzz: Create TaintSourceMap lazily (MemoryMapping is fully initialized now)
+        {
+            let mut instrumenter = self.instrumenter.borrow_mut();
+            if instrumenter.taint_tracker.init_flag == false {
+                let taint_source_map = Self::create_taint_source_map(&self.memory_mapping).unwrap();
+                instrumenter.init_taint_trakcer(&taint_source_map);
+            }
+        }
+
         self.registers[11] = executable.get_entrypoint_instruction_offset() as u64;
         let config = executable.get_config();
         let initial_insn_count = self.context_object_pointer.get_remaining();
         self.previous_instruction_meter = initial_insn_count;
         self.due_insn_count = 0;
         self.program_result = ProgramResult::Ok(0);
-        if interpreted {
+        if true {
+            // Always using interpreter for NovaFuzz
             #[cfg(feature = "debugger")]
             let debug_port = self.debug_port.clone();
             let mut interpreter = Interpreter::new(self, executable, self.registers);

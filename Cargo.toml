@@ -29,6 +29,7 @@ rand = { version = "0.8.5", features = ["small_rng"], optional = true }
 rustc-demangle = "0.1"
 shuttle = { version = "0.7.1", optional = true }
 thiserror = "2.0.9"
+novafuzz-instrument = { path = "../fuzzer/instrument" }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["memoryapi", "sysinfoapi", "winnt", "errhandlingapi"], optional = true }
