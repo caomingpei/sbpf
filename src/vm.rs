@@ -46,9 +46,9 @@ const PROGRAM_ENVIRONMENT_KEY_SHIFT: u32 = 4;
 #[cfg(feature = "jit")]
 static RUNTIME_ENVIRONMENT_KEY: std::sync::OnceLock<i32> = std::sync::OnceLock::<i32>::new();
 
-use novafuzz_instrument::types::TaintSourceMap;
+use novafuzz_instrument::TaintSourceMap;
 /// NovaFuzz import taint source map
-use novafuzz_instrument::Instrumenter;
+use novafuzz_instrument::{types::AccountSemantic, Instrumenter};
 
 /// Returns (and if not done before generates) the encryption key for the VM pointer
 pub fn get_runtime_environment_key() -> i32 {
@@ -319,7 +319,6 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         memory_mapping: &MemoryMapping<'a>,
     ) -> Result<TaintSourceMap, String> {
         use crate::{ebpf, memory_region::AccessType};
-        use novafuzz_instrument::types::MemoryRegionInfo;
 
         // Create read closures
         let read_u8 = |addr: u64| -> Option<u8> {
@@ -337,19 +336,8 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
                 ProgramResult::Err(_) => None,
             }
         };
-        // Extract region info
-        let region_infos = memory_mapping
-            .get_regions()
-            .iter()
-            .map(|r| MemoryRegionInfo {
-                vm_addr: r.vm_addr,
-                len: r.len,
-                writable: r.writable,
-                payload: r.access_violation_handler_payload,
-            });
-
         // Create TaintSourceMap
-        TaintSourceMap::from_memory_regions(ebpf::MM_INPUT_START, read_u8, read_u64, region_infos)
+        TaintSourceMap::from_memory_regions(ebpf::MM_INPUT_START, read_u8, read_u64)
     }
 
     /// Creates a new virtual machine instance.
@@ -451,6 +439,20 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
                 instrumenter.init_taint_trakcer(&taint_source_map);
             }
         }
+        // NovaFuzz: Print input data taint sources, for debugging
+        // {
+        //     let instrumenter = self.instrumenter.borrow();
+
+        //     for (addr, source) in instrumenter.taint_tracker.original_sources.iter() {
+        //         if let &novafuzz_instrument::types::InstructionSemantic::Account(
+        //             _,
+        //             AccountSemantic::Duplicate(_),
+        //         ) = source
+        //         {
+        //             println!("NovaFuzz: Input data taint source at address: 0x{:x}", addr);
+        //         }
+        //     }
+        // }
 
         self.registers[11] = executable.get_entrypoint_instruction_offset() as u64;
         let config = executable.get_config();
