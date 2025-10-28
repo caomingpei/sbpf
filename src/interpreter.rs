@@ -133,12 +133,19 @@ macro_rules! instrument_mov_reg {
 
 /// Instrument a conditional jump instruction
 macro_rules! instrument_conditional_jump {
-    ($self:expr, $pc:expr, $target_pc:expr, $taken:expr, $condition_reg:expr) => {
+    ($self:expr, $pc:expr, $target_pc:expr, $taken:expr,
+     $opcode:expr, $dst_reg:expr, $dst_value:expr,
+     $src_reg:expr, $src_value:expr, $imm:expr) => {
         $self.vm.instrumenter.borrow_mut().on_conditional_jump(
             $pc,
             $target_pc,
             $taken,
-            $condition_reg as u8,
+            $opcode,
+            $dst_reg as u8,
+            $dst_value,
+            $src_reg as u8,
+            $src_value,
+            $imm,
         );
     };
 }
@@ -758,7 +765,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], 0, 0, insn.imm);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -770,7 +778,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], src, self.reg[src], 0);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -782,7 +791,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], 0, 0, insn.imm);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -794,7 +804,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], src, self.reg[src], 0);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -806,7 +817,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], 0, 0, insn.imm);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -818,7 +830,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], src, self.reg[src], 0);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -830,7 +843,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], 0, 0, insn.imm);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -842,7 +856,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], src, self.reg[src], 0);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -854,7 +869,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], 0, 0, insn.imm);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -866,7 +882,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], src, self.reg[src], 0);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -878,7 +895,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], 0, 0, insn.imm);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -890,7 +908,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], src, self.reg[src], 0);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -902,7 +921,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], 0, 0, insn.imm);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -914,7 +934,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], src, self.reg[src], 0);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -926,7 +947,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], 0, 0, insn.imm);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -938,7 +960,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], src, self.reg[src], 0);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -950,7 +973,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], 0, 0, insn.imm);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -962,7 +986,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], src, self.reg[src], 0);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -974,7 +999,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], 0, 0, insn.imm);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -986,7 +1012,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], src, self.reg[src], 0);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -998,7 +1025,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], 0, 0, insn.imm);
                 if taken {
                     next_pc = target_pc;
                 }
@@ -1010,7 +1038,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     next_pc
                 };
-                instrument_conditional_jump!(self, self.reg[11], target_pc, taken, dst);
+                instrument_conditional_jump!(self, self.reg[11], target_pc, taken,
+                    insn.opc, dst, self.reg[dst], src, self.reg[src], 0);
                 if taken {
                     next_pc = target_pc;
                 }
