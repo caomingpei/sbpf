@@ -30,6 +30,7 @@ rustc-demangle = "0.1"
 shuttle = { version = "0.7.1", optional = true }
 thiserror = "2.0.9"
 novafuzz-instrument = { path = "../fuzzer/instrument" }
+shared = { path = "../fuzzer/shared" }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["memoryapi", "sysinfoapi", "winnt", "errhandlingapi"], optional = true }

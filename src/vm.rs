@@ -46,9 +46,8 @@ const PROGRAM_ENVIRONMENT_KEY_SHIFT: u32 = 4;
 #[cfg(feature = "jit")]
 static RUNTIME_ENVIRONMENT_KEY: std::sync::OnceLock<i32> = std::sync::OnceLock::<i32>::new();
 
-use novafuzz_instrument::TaintSourceMap;
-/// NovaFuzz import taint source map
-use novafuzz_instrument::{types::AccountSemantic, Instrumenter};
+use novafuzz_instrument::{Instrumenter, TaintSourceMap};
+use shared::model::instrument::AccountSemantic;
 
 /// Returns (and if not done before generates) the encryption key for the VM pointer
 pub fn get_runtime_environment_key() -> i32 {
