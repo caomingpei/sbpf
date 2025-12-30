@@ -287,6 +287,12 @@ impl<C: ContextObject> Executable<C> {
         get_ro_region(&self.ro_section, self.elf_bytes.as_slice())
     }
 
+    /// Get the complete relocated ELF bytes
+    /// This returns the full ELF file with all relocations applied
+    pub fn get_elf_bytes(&self) -> &[u8] {
+        self.elf_bytes.as_slice()
+    }
+
     /// Get the entry point offset into the text section
     pub fn get_entrypoint_instruction_offset(&self) -> usize {
         self.entry_pc
