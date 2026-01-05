@@ -314,6 +314,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::LD_DW_IMM if !self.executable.get_sbpf_version().disable_lddw() => {
                 ebpf::augment_lddw_unchecked(self.program, &mut insn);
                 self.reg[dst] = insn.imm as u64;
+                instrument_mov_imm!(self, dst);
                 self.reg[11] += 1;
                 next_pc += 1;
             },
@@ -677,80 +678,121 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
             ebpf::HOR64_IMM if self.executable.get_sbpf_version().disable_lddw() => {
                 self.reg[dst] |= (insn.imm as u64).wrapping_shl(32);
+                instrument_alu_imm!(self, dst, true);
             }
 
             // BPF_PQR class
-            ebpf::LMUL32_IMM if self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] = (self.reg[dst] as u32).wrapping_mul(insn.imm as u32) as u64,
-            ebpf::LMUL32_REG if self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] = (self.reg[dst] as u32).wrapping_mul(self.reg[src] as u32) as u64,
-            ebpf::LMUL64_IMM if self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] = self.reg[dst].wrapping_mul(insn.imm as u64),
-            ebpf::LMUL64_REG if self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] = self.reg[dst].wrapping_mul(self.reg[src]),
-            ebpf::UHMUL64_IMM if self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] = (self.reg[dst] as u128).wrapping_mul(insn.imm as u32 as u128).wrapping_shr(64) as u64,
-            ebpf::UHMUL64_REG if self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] = (self.reg[dst] as u128).wrapping_mul(self.reg[src] as u128).wrapping_shr(64) as u64,
-            ebpf::SHMUL64_IMM if self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] = (self.reg[dst] as i64 as i128).wrapping_mul(insn.imm as i128).wrapping_shr(64) as u64,
-            ebpf::SHMUL64_REG if self.executable.get_sbpf_version().enable_pqr() => self.reg[dst] = (self.reg[dst] as i64 as i128).wrapping_mul(self.reg[src] as i64 as i128).wrapping_shr(64) as u64,
+            ebpf::LMUL32_IMM if self.executable.get_sbpf_version().enable_pqr() => {
+                self.reg[dst] = (self.reg[dst] as u32).wrapping_mul(insn.imm as u32) as u64;
+                instrument_alu_imm!(self, dst, false);
+            },
+            ebpf::LMUL32_REG if self.executable.get_sbpf_version().enable_pqr() => {
+                self.reg[dst] = (self.reg[dst] as u32).wrapping_mul(self.reg[src] as u32) as u64;
+                instrument_alu_reg!(self, dst, src, false);
+            },
+            ebpf::LMUL64_IMM if self.executable.get_sbpf_version().enable_pqr() => {
+                self.reg[dst] = self.reg[dst].wrapping_mul(insn.imm as u64);
+                instrument_alu_imm!(self, dst, true);
+            },
+            ebpf::LMUL64_REG if self.executable.get_sbpf_version().enable_pqr() => {
+                self.reg[dst] = self.reg[dst].wrapping_mul(self.reg[src]);
+                instrument_alu_reg!(self, dst, src, true);
+            },
+            ebpf::UHMUL64_IMM if self.executable.get_sbpf_version().enable_pqr() => {
+                self.reg[dst] = (self.reg[dst] as u128).wrapping_mul(insn.imm as u32 as u128).wrapping_shr(64) as u64;
+                instrument_alu_imm!(self, dst, true);
+            },
+            ebpf::UHMUL64_REG if self.executable.get_sbpf_version().enable_pqr() => {
+                self.reg[dst] = (self.reg[dst] as u128).wrapping_mul(self.reg[src] as u128).wrapping_shr(64) as u64;
+                instrument_alu_reg!(self, dst, src, true);
+            },
+            ebpf::SHMUL64_IMM if self.executable.get_sbpf_version().enable_pqr() => {
+                self.reg[dst] = (self.reg[dst] as i64 as i128).wrapping_mul(insn.imm as i128).wrapping_shr(64) as u64;
+                instrument_alu_imm!(self, dst, true);
+            },
+            ebpf::SHMUL64_REG if self.executable.get_sbpf_version().enable_pqr() => {
+                self.reg[dst] = (self.reg[dst] as i64 as i128).wrapping_mul(self.reg[src] as i64 as i128).wrapping_shr(64) as u64;
+                instrument_alu_reg!(self, dst, src, true);
+            },
             ebpf::UDIV32_IMM if self.executable.get_sbpf_version().enable_pqr() => {
-                                self.reg[dst] = (self.reg[dst] as u32 / insn.imm as u32)      as u64;
+                self.reg[dst] = (self.reg[dst] as u32 / insn.imm as u32) as u64;
+                instrument_alu_imm!(self, dst, false);
             }
             ebpf::UDIV32_REG if self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideByZero; self, self.reg[src], u32);
-                                self.reg[dst] = (self.reg[dst] as u32 / self.reg[src] as u32) as u64;
+                self.reg[dst] = (self.reg[dst] as u32 / self.reg[src] as u32) as u64;
+                instrument_alu_reg!(self, dst, src, false);
             },
             ebpf::UDIV64_IMM if self.executable.get_sbpf_version().enable_pqr() => {
-                                self.reg[dst] /= insn.imm as u32 as u64;
+                self.reg[dst] /= insn.imm as u32 as u64;
+                instrument_alu_imm!(self, dst, true);
             }
             ebpf::UDIV64_REG if self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideByZero; self, self.reg[src], u64);
-                                self.reg[dst] /= self.reg[src];
+                self.reg[dst] /= self.reg[src];
+                instrument_alu_reg!(self, dst, src, true);
             },
             ebpf::UREM32_IMM if self.executable.get_sbpf_version().enable_pqr() => {
-                                self.reg[dst] = (self.reg[dst] as u32 % insn.imm as u32)      as u64;
+                self.reg[dst] = (self.reg[dst] as u32 % insn.imm as u32) as u64;
+                instrument_alu_imm!(self, dst, false);
             }
             ebpf::UREM32_REG if self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideByZero; self, self.reg[src], u32);
-                                self.reg[dst] = (self.reg[dst] as u32 % self.reg[src] as u32) as u64;
+                self.reg[dst] = (self.reg[dst] as u32 % self.reg[src] as u32) as u64;
+                instrument_alu_reg!(self, dst, src, false);
             },
             ebpf::UREM64_IMM if self.executable.get_sbpf_version().enable_pqr() => {
-                                self.reg[dst] %= insn.imm as u32 as u64;
+                self.reg[dst] %= insn.imm as u32 as u64;
+                instrument_alu_imm!(self, dst, true);
             }
             ebpf::UREM64_REG if self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideByZero; self, self.reg[src], u64);
-                                self.reg[dst] %= self.reg[src];
+                self.reg[dst] %= self.reg[src];
+                instrument_alu_reg!(self, dst, src, true);
             },
             ebpf::SDIV32_IMM if self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideOverflow; self, insn.imm, self.reg[dst], i32);
-                                self.reg[dst] = (self.reg[dst] as i32 / insn.imm as i32)      as u32 as u64;
+                self.reg[dst] = (self.reg[dst] as i32 / insn.imm as i32) as u32 as u64;
+                instrument_alu_imm!(self, dst, false);
             }
             ebpf::SDIV32_REG if self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideByZero; self, self.reg[src], i32);
                 throw_error!(DivideOverflow; self, self.reg[src], self.reg[dst], i32);
-                                self.reg[dst] = (self.reg[dst] as i32 / self.reg[src] as i32) as u32 as u64;
+                self.reg[dst] = (self.reg[dst] as i32 / self.reg[src] as i32) as u32 as u64;
+                instrument_alu_reg!(self, dst, src, false);
             },
             ebpf::SDIV64_IMM if self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideOverflow; self, insn.imm, self.reg[dst], i64);
-                                self.reg[dst] = (self.reg[dst] as i64 / insn.imm)             as u64;
+                self.reg[dst] = (self.reg[dst] as i64 / insn.imm) as u64;
+                instrument_alu_imm!(self, dst, true);
             }
             ebpf::SDIV64_REG if self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideByZero; self, self.reg[src], i64);
                 throw_error!(DivideOverflow; self, self.reg[src], self.reg[dst], i64);
-                                self.reg[dst] = (self.reg[dst] as i64 / self.reg[src] as i64) as u64;
+                self.reg[dst] = (self.reg[dst] as i64 / self.reg[src] as i64) as u64;
+                instrument_alu_reg!(self, dst, src, true);
             },
             ebpf::SREM32_IMM if self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideOverflow; self, insn.imm, self.reg[dst], i32);
-                                self.reg[dst] = (self.reg[dst] as i32 % insn.imm as i32)      as u32 as u64;
+                self.reg[dst] = (self.reg[dst] as i32 % insn.imm as i32) as u32 as u64;
+                instrument_alu_imm!(self, dst, false);
             }
             ebpf::SREM32_REG if self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideByZero; self, self.reg[src], i32);
                 throw_error!(DivideOverflow; self, self.reg[src], self.reg[dst], i32);
-                                self.reg[dst] = (self.reg[dst] as i32 % self.reg[src] as i32) as u32 as u64;
+                self.reg[dst] = (self.reg[dst] as i32 % self.reg[src] as i32) as u32 as u64;
+                instrument_alu_reg!(self, dst, src, false);
             },
             ebpf::SREM64_IMM if self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideOverflow; self, insn.imm, self.reg[dst], i64);
-                                self.reg[dst] = (self.reg[dst] as i64 % insn.imm)             as u64;
+                self.reg[dst] = (self.reg[dst] as i64 % insn.imm) as u64;
+                instrument_alu_imm!(self, dst, true);
             }
             ebpf::SREM64_REG if self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideByZero; self, self.reg[src], i64);
                 throw_error!(DivideOverflow; self, self.reg[src], self.reg[dst], i64);
-                                self.reg[dst] = (self.reg[dst] as i64 % self.reg[src] as i64) as u64;
+                self.reg[dst] = (self.reg[dst] as i64 % self.reg[src] as i64) as u64;
+                instrument_alu_reg!(self, dst, src, true);
             },
 
             // BPF_JMP class
