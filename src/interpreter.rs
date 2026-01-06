@@ -91,6 +91,17 @@ macro_rules! instrument_store {
     };
 }
 
+/// Instrument a STORE immediate instruction (immediate -> memory)
+macro_rules! instrument_store_imm {
+    ($self:expr, $vm_addr:expr, $size:expr) => {
+        $self
+            .vm
+            .instrumenter
+            .borrow_mut()
+            .on_store_imm($vm_addr, $size);
+    };
+}
+
 /// Instrument an ALU register operation (dst = dst op src)
 macro_rules! instrument_alu_reg {
     ($self:expr, $dst:expr, $src:expr, $is_64bit:expr) => {
@@ -121,13 +132,14 @@ macro_rules! instrument_mov_imm {
 }
 
 /// Instrument a MOV register operation (dst = src)
+/// $is_64bit: true for MOV64_REG, false for MOV32_REG
 macro_rules! instrument_mov_reg {
-    ($self:expr, $dst:expr, $src:expr) => {
+    ($self:expr, $dst:expr, $src:expr, $is_64bit:expr) => {
         $self
             .vm
             .instrumenter
             .borrow_mut()
-            .on_mov_reg($dst as u8, $src as u8);
+            .on_mov_reg($dst as u8, $src as u8, $is_64bit);
     };
 }
 
@@ -253,6 +265,9 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
     }
 
     fn push_frame(&mut self, config: &Config) -> bool {
+        // Save scratch register taint (r6-r9) to temporary storage (r12-r15)
+        self.vm.instrumenter.borrow_mut().save_scratch_register_taint();
+
         let frame = &mut self.vm.call_frames[self.vm.call_depth as usize];
         frame.caller_saved_registers.copy_from_slice(
             &self.reg[ebpf::FIRST_SCRATCH_REG..ebpf::FIRST_SCRATCH_REG + ebpf::SCRATCH_REGS],
@@ -345,18 +360,22 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::ST_B_IMM  if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u8);
+                instrument_store_imm!(self, vm_addr, 1);
             },
             ebpf::ST_H_IMM  if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u16);
+                instrument_store_imm!(self, vm_addr, 2);
             },
             ebpf::ST_W_IMM  if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u32);
+                instrument_store_imm!(self, vm_addr, 4);
             },
             ebpf::ST_DW_IMM if !self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u64);
+                instrument_store_imm!(self, vm_addr, 8);
             },
 
             // BPF_STX class
@@ -502,7 +521,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 } else {
                     self.reg[src] as u32 as u64
                 };
-                instrument_mov_reg!(self, dst, src);
+                instrument_mov_reg!(self, dst, src, false); // 32-bit mode
             },
             ebpf::ARSH32_IMM => {
                 self.reg[dst] = (self.reg[dst] as i32).wrapping_shr(insn.imm as u32) as u32 as u64;
@@ -561,6 +580,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::ST_1B_IMM  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u8);
+                instrument_store_imm!(self, vm_addr, 1);
             },
             ebpf::MUL64_REG  if !self.executable.get_sbpf_version().enable_pqr() => {
                 self.reg[dst] = self.reg[dst].wrapping_mul(self.reg[src]);
@@ -578,6 +598,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::ST_2B_IMM  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u16);
+                instrument_store_imm!(self, vm_addr, 2);
             },
             ebpf::DIV64_REG  if !self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideByZero; self, self.reg[src], u64);
@@ -624,6 +645,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::ST_4B_IMM  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u32);
+                instrument_store_imm!(self, vm_addr, 4);
             },
             ebpf::NEG64      if !self.executable.get_sbpf_version().disable_neg() => {
                 self.reg[dst] = (self.reg[dst] as i64).wrapping_neg() as u64;
@@ -641,6 +663,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::ST_8B_IMM  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 translate_memory_access!(self, store, insn.imm, vm_addr, u64);
+                instrument_store_imm!(self, vm_addr, 8);
             },
             ebpf::MOD64_REG  if !self.executable.get_sbpf_version().enable_pqr() => {
                 throw_error!(DivideByZero; self, self.reg[src], u64);
@@ -666,7 +689,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
             ebpf::MOV64_REG  => {
                 self.reg[dst] = self.reg[src];
-                instrument_mov_reg!(self, dst, src);
+                instrument_mov_reg!(self, dst, src, true); // 64-bit mode
             },
             ebpf::ARSH64_IMM => {
                 self.reg[dst] = (self.reg[dst] as i64).wrapping_shr(insn.imm as u32) as u64;
@@ -1120,11 +1143,13 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     }
                     check_pc!(self, next_pc, key as u64);
                 } else if let Some((_, function)) = self.executable.get_loader().get_function_registry().lookup_by_key(insn.imm as u32) {
-                    // SBPFv0 syscall - no instrumentation for syscalls
+                    // SBPFv0 syscall
                     self.reg[0] = match self.dispatch_syscall(function) {
                         ProgramResult::Ok(value) => *value,
                         ProgramResult::Err(_err) => return false,
                     };
+                    // Clear taint on r0 (syscall return value is untainted)
+                    self.vm.instrumenter.borrow_mut().on_syscall_return();
                 } else if let Some((_, target_pc)) =
                     self.executable
                     .get_function_registry()
@@ -1146,6 +1171,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                         ProgramResult::Ok(value) => *value,
                         ProgramResult::Err(_err) => return false,
                     };
+                    // Clear taint on r0 (syscall return value is untainted)
+                    self.vm.instrumenter.borrow_mut().on_syscall_return();
                 } else {
                     debug_assert!(false, "Invalid syscall should have been detected in the verifier.");
                 }
@@ -1174,6 +1201,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 self.reg[ebpf::FIRST_SCRATCH_REG
                     ..ebpf::FIRST_SCRATCH_REG + ebpf::SCRATCH_REGS]
                     .copy_from_slice(&frame.caller_saved_registers);
+                // Restore scratch register taint (r6-r9) from temporary storage (r12-r15)
+                self.vm.instrumenter.borrow_mut().restore_scratch_register_taint();
                 check_pc!(self, next_pc, frame.target_pc);
             }
             _ => throw_error!(self, EbpfError::UnsupportedInstruction),
