@@ -28,6 +28,8 @@ use std::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use novafuzz_shared::model::instrument::InstructionSemantic;
+
 #[cfg(feature = "shuttle-test")]
 use shuttle::sync::Arc;
 #[cfg(not(feature = "shuttle-test"))]
@@ -46,7 +48,7 @@ const PROGRAM_ENVIRONMENT_KEY_SHIFT: u32 = 4;
 #[cfg(feature = "jit")]
 static RUNTIME_ENVIRONMENT_KEY: std::sync::OnceLock<i32> = std::sync::OnceLock::<i32>::new();
 
-use novafuzz_instrument::{Instrumenter, TaintSourceMap};
+use novafuzz_instrument::{Instrumenter, TaintSourceMap, VmTaintState};
 use novafuzz_shared::model::instrument::AccountSemantic;
 
 /// Returns (and if not done before generates) the encryption key for the VM pointer
@@ -197,6 +199,8 @@ pub struct CallFrame {
     pub frame_pointer: u64,
     /// The target_pc of the exit instruction which returns back to the caller
     pub target_pc: u64,
+    /// Taint state for caller saved registers (r6-r9), 4 registers × 8 bytes each
+    pub caller_saved_taint: [[Option<InstructionSemantic>; 8]; 4],
 }
 
 /// Indices of slots inside [EbpfVm]
@@ -303,6 +307,8 @@ pub struct EbpfVm<'a, C: ContextObject> {
     pub memory_mapping: MemoryMapping<'a>,
     /// NovaFuzz: Instrumenter
     pub instrumenter: Rc<RefCell<Instrumenter>>,
+    /// NovaFuzz: Per-VM taint state
+    pub vm_taint_state: Rc<RefCell<VmTaintState>>,
     /// Stack of CallFrames used by the Interpreter
     pub call_frames: Vec<CallFrame>,
     /// Loader built-in program
@@ -372,6 +378,7 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
             program_result: ProgramResult::Ok(0),
             memory_mapping,
             instrumenter: Rc::new(RefCell::new(Instrumenter::new())),
+            vm_taint_state: Rc::new(RefCell::new(VmTaintState::new())),
             call_frames: vec![CallFrame::default(); config.max_call_depth],
             loader,
             #[cfg(feature = "debugger")]
@@ -413,6 +420,7 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
             program_result: ProgramResult::Ok(0),
             memory_mapping,
             instrumenter,
+            vm_taint_state: Rc::new(RefCell::new(VmTaintState::new())),
             call_frames: vec![CallFrame::default(); config.max_call_depth],
             loader,
             #[cfg(feature = "debugger")]
@@ -430,13 +438,10 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
     ) -> (u64, ProgramResult) {
         debug_assert!(Arc::ptr_eq(&self.loader, executable.get_loader()));
 
-        /// NovaFuzz: Create TaintSourceMap lazily (MemoryMapping is fully initialized now)
+        // NovaFuzz: Initialize THIS VM's taint state (no init_flag check)
         {
-            let mut instrumenter = self.instrumenter.borrow_mut();
-            if instrumenter.taint_tracker.init_flag == false {
-                let taint_source_map = Self::create_taint_source_map(&self.memory_mapping).unwrap();
-                instrumenter.init_taint_trakcer(&taint_source_map);
-            }
+            let taint_source_map = Self::create_taint_source_map(&self.memory_mapping).unwrap();
+            self.vm_taint_state.borrow_mut().init(&taint_source_map);
         }
         // NovaFuzz: Print input data taint sources, for debugging
         // {
