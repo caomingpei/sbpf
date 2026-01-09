@@ -19,6 +19,7 @@ use crate::{
     program::BuiltinFunction,
     vm::{Config, ContextObject, EbpfVm},
 };
+use novafuzz_shared::model::instrument::ArithmeticOpType;
 
 /// Virtual memory operation helper.
 macro_rules! translate_memory_access {
@@ -192,6 +193,53 @@ macro_rules! instrument_return {
 macro_rules! instrument_exit {
     ($self:expr, $pc:expr, $exit_code:expr) => {
         $self.vm.instrumenter.borrow_mut().on_exit($pc, $exit_code);
+    };
+}
+
+/// Instrument an arithmetic operation with overflow detection
+macro_rules! instrument_arithmetic_op {
+    // REG variant: dst = dst op src
+    ($self:expr, $pc:expr, $opcode:expr, $op_type:expr, $dst:expr, $src:expr,
+     $operand_a:expr, $operand_b:expr, $result:expr, $overflowed:expr) => {
+        {
+            let dst_taint = $self.vm.vm_taint_state.borrow().get_register_taints($dst as u8);
+            let src_taint = Some($self.vm.vm_taint_state.borrow().get_register_taints($src as u8));
+
+            $self.vm.instrumenter.borrow_mut().on_arithmetic_op(
+                &$self.vm.vm_taint_state.borrow(),
+                $pc,
+                $opcode,
+                $op_type,
+                $dst as u8,
+                $operand_a,
+                $operand_b,
+                $result,
+                $overflowed,
+                dst_taint,
+                src_taint,
+            );
+        }
+    };
+    // IMM variant: dst = dst op imm
+    ($self:expr, $pc:expr, $opcode:expr, $op_type:expr, $dst:expr,
+     $operand_a:expr, $operand_b:expr, $result:expr, $overflowed:expr) => {
+        {
+            let dst_taint = $self.vm.vm_taint_state.borrow().get_register_taints($dst as u8);
+
+            $self.vm.instrumenter.borrow_mut().on_arithmetic_op(
+                &$self.vm.vm_taint_state.borrow(),
+                $pc,
+                $opcode,
+                $op_type,
+                $dst as u8,
+                $operand_a,
+                $operand_b,
+                $result,
+                $overflowed,
+                dst_taint,
+                None, // IMM operations have no source register taint
+            );
+        }
     };
 }
 
@@ -558,27 +606,76 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
 
             // BPF_ALU64_STORE class
             ebpf::ADD64_IMM  => {
-                self.reg[dst] = self.reg[dst].wrapping_add(insn.imm as u64);
+                let operand_a = self.reg[dst];
+                let operand_b = insn.imm as u64;
+                let (result, overflowed) = operand_a.overflowing_add(operand_b);
+                self.reg[dst] = result;
+
+                instrument_arithmetic_op!(
+                    self, self.reg[11], ebpf::ADD64_IMM,
+                    ArithmeticOpType::Add,
+                    dst, operand_a, operand_b, result, overflowed
+                );
                 instrument_alu_imm!(self, dst, true);
             },
             ebpf::ADD64_REG  => {
-                self.reg[dst] = self.reg[dst].wrapping_add(self.reg[src]);
+                let operand_a = self.reg[dst];
+                let operand_b = self.reg[src];
+                let (result, overflowed) = operand_a.overflowing_add(operand_b);
+                self.reg[dst] = result;
+
+                instrument_arithmetic_op!(
+                    self, self.reg[11], ebpf::ADD64_REG,
+                    ArithmeticOpType::Add,
+                    dst, src, operand_a, operand_b, result, overflowed
+                );
                 instrument_alu_reg!(self, dst, src, true);
             },
             ebpf::SUB64_IMM  => {
-                if self.executable.get_sbpf_version().swap_sub_reg_imm_operands() {
-                    self.reg[dst] = (insn.imm as u64).wrapping_sub(self.reg[dst])
+                let (operand_a, operand_b, result, overflowed) = if self.executable.get_sbpf_version().swap_sub_reg_imm_operands() {
+                    let a = insn.imm as u64;
+                    let b = self.reg[dst];
+                    let (res, ovf) = a.overflowing_sub(b);
+                    (a, b, res, ovf)
                 } else {
-                    self.reg[dst] = self.reg[dst].wrapping_sub(insn.imm as u64)
+                    let a = self.reg[dst];
+                    let b = insn.imm as u64;
+                    let (res, ovf) = a.overflowing_sub(b);
+                    (a, b, res, ovf)
                 };
+                self.reg[dst] = result;
+
+                instrument_arithmetic_op!(
+                    self, self.reg[11], ebpf::SUB64_IMM,
+                    ArithmeticOpType::Sub,
+                    dst, operand_a, operand_b, result, overflowed
+                );
                 instrument_alu_imm!(self, dst, true);
             },
             ebpf::SUB64_REG  => {
-                self.reg[dst] = self.reg[dst].wrapping_sub(self.reg[src]);
+                let operand_a = self.reg[dst];
+                let operand_b = self.reg[src];
+                let (result, overflowed) = operand_a.overflowing_sub(operand_b);
+                self.reg[dst] = result;
+
+                instrument_arithmetic_op!(
+                    self, self.reg[11], ebpf::SUB64_REG,
+                    ArithmeticOpType::Sub,
+                    dst, src, operand_a, operand_b, result, overflowed
+                );
                 instrument_alu_reg!(self, dst, src, true);
             },
             ebpf::MUL64_IMM  if !self.executable.get_sbpf_version().enable_pqr() => {
-                self.reg[dst] = self.reg[dst].wrapping_mul(insn.imm as u64);
+                let operand_a = self.reg[dst];
+                let operand_b = insn.imm as u64;
+                let (result, overflowed) = operand_a.overflowing_mul(operand_b);
+                self.reg[dst] = result;
+
+                instrument_arithmetic_op!(
+                    self, self.reg[11], ebpf::MUL64_IMM,
+                    ArithmeticOpType::Mul,
+                    dst, operand_a, operand_b, result, overflowed
+                );
                 instrument_alu_imm!(self, dst, true);
             },
             ebpf::ST_1B_IMM  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
@@ -587,7 +684,16 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 instrument_store_imm!(self, vm_addr, insn.imm as i64, 1);
             },
             ebpf::MUL64_REG  if !self.executable.get_sbpf_version().enable_pqr() => {
-                self.reg[dst] = self.reg[dst].wrapping_mul(self.reg[src]);
+                let operand_a = self.reg[dst];
+                let operand_b = self.reg[src];
+                let (result, overflowed) = operand_a.overflowing_mul(operand_b);
+                self.reg[dst] = result;
+
+                instrument_arithmetic_op!(
+                    self, self.reg[11], ebpf::MUL64_REG,
+                    ArithmeticOpType::Mul,
+                    dst, src, operand_a, operand_b, result, overflowed
+                );
                 instrument_alu_reg!(self, dst, src, true);
             },
             ebpf::ST_1B_REG  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
