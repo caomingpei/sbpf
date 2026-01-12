@@ -136,11 +136,25 @@ macro_rules! instrument_mov_imm {
 /// $is_64bit: true for MOV64_REG, false for MOV32_REG
 macro_rules! instrument_mov_reg {
     ($self:expr, $dst:expr, $src:expr, $is_64bit:expr) => {
-        $self
-            .vm
-            .instrumenter
-            .borrow_mut()
-            .on_mov_reg(&mut $self.vm.vm_taint_state.borrow_mut(), $dst as u8, $src as u8, $is_64bit);
+        {
+            // Propagate overflow flag from source to destination
+            let src_overflowed = $self.vm.vm_taint_state.borrow()
+                .is_register_overflowed($src as u8);
+            if src_overflowed {
+                $self.vm.vm_taint_state.borrow_mut()
+                    .mark_register_overflowed($dst as u8);
+            } else {
+                $self.vm.vm_taint_state.borrow_mut()
+                    .clear_register_overflowed($dst as u8);
+            }
+
+            // Continue with regular taint tracking
+            $self
+                .vm
+                .instrumenter
+                .borrow_mut()
+                .on_mov_reg(&mut $self.vm.vm_taint_state.borrow_mut(), $dst as u8, $src as u8, $is_64bit);
+        }
     };
 }
 
@@ -202,43 +216,69 @@ macro_rules! instrument_arithmetic_op {
     ($self:expr, $pc:expr, $opcode:expr, $op_type:expr, $dst:expr, $src:expr,
      $operand_a:expr, $operand_b:expr, $result:expr, $overflowed:expr) => {
         {
-            let dst_taint = $self.vm.vm_taint_state.borrow().get_register_taints($dst as u8);
-            let src_taint = Some($self.vm.vm_taint_state.borrow().get_register_taints($src as u8));
+            // Mark/clear overflow flag for real-time detection
+            if $overflowed {
+                $self.vm.vm_taint_state.borrow_mut()
+                    .mark_register_overflowed($dst as u8);
+            } else {
+                $self.vm.vm_taint_state.borrow_mut()
+                    .clear_register_overflowed($dst as u8);
+            }
 
-            $self.vm.instrumenter.borrow_mut().on_arithmetic_op(
-                &$self.vm.vm_taint_state.borrow(),
-                $pc,
-                $opcode,
-                $op_type,
-                $dst as u8,
-                $operand_a,
-                $operand_b,
-                $result,
-                $overflowed,
-                dst_taint,
-                src_taint,
-            );
+            // Only record detailed arithmetic operations in debug mode
+            #[cfg(debug_assertions)]
+            {
+                let dst_taint = $self.vm.vm_taint_state.borrow().get_register_taints($dst as u8);
+                let src_taint = Some($self.vm.vm_taint_state.borrow().get_register_taints($src as u8));
+
+                $self.vm.instrumenter.borrow_mut().on_arithmetic_op(
+                    &$self.vm.vm_taint_state.borrow(),
+                    $pc,
+                    $opcode,
+                    $op_type,
+                    $dst as u8,
+                    $operand_a,
+                    $operand_b,
+                    $result,
+                    $overflowed,
+                    dst_taint,
+                    src_taint,
+                );
+            }
         }
     };
     // IMM variant: dst = dst op imm
     ($self:expr, $pc:expr, $opcode:expr, $op_type:expr, $dst:expr,
      $operand_a:expr, $operand_b:expr, $result:expr, $overflowed:expr) => {
         {
-            let dst_taint = $self.vm.vm_taint_state.borrow().get_register_taints($dst as u8);
+            // Mark/clear overflow flag for real-time detection
+            if $overflowed {
+                $self.vm.vm_taint_state.borrow_mut()
+                    .mark_register_overflowed($dst as u8);
+            } else {
+                $self.vm.vm_taint_state.borrow_mut()
+                    .clear_register_overflowed($dst as u8);
+            }
 
-            $self.vm.instrumenter.borrow_mut().on_arithmetic_op(
-                &$self.vm.vm_taint_state.borrow(),
-                $pc,
-                $opcode,
-                $op_type,
-                $dst as u8,
-                $operand_a,
-                $operand_b,
-                $result,
-                $overflowed,
-                dst_taint,
-                None, // IMM operations have no source register taint
-            );
+            // Only record detailed arithmetic operations in debug mode
+            #[cfg(debug_assertions)]
+            {
+                let dst_taint = $self.vm.vm_taint_state.borrow().get_register_taints($dst as u8);
+
+                $self.vm.instrumenter.borrow_mut().on_arithmetic_op(
+                    &$self.vm.vm_taint_state.borrow(),
+                    $pc,
+                    $opcode,
+                    $op_type,
+                    $dst as u8,
+                    $operand_a,
+                    $operand_b,
+                    $result,
+                    $overflowed,
+                    dst_taint,
+                    None, // IMM operations have no source register taint
+                );
+            }
         }
     };
 }
@@ -506,6 +546,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
             ebpf::OR32_REG   => {
                 self.reg[dst] = (self.reg[dst] as u32 | self.reg[src] as u32) as u64;
+                // OR cannot overflow, clear the flag
+                self.vm.vm_taint_state.borrow_mut().clear_register_overflowed(dst as u8);
                 instrument_alu_reg!(self, dst, src, false);
             },
             ebpf::AND32_IMM  => {
@@ -514,6 +556,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
             ebpf::AND32_REG  => {
                 self.reg[dst] = (self.reg[dst] as u32 & self.reg[src] as u32) as u64;
+                // AND cannot overflow, clear the flag
+                self.vm.vm_taint_state.borrow_mut().clear_register_overflowed(dst as u8);
                 instrument_alu_reg!(self, dst, src, false);
             },
             ebpf::LSH32_IMM  => {
@@ -561,6 +605,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
             ebpf::XOR32_REG  => {
                 self.reg[dst] = (self.reg[dst] as u32 ^ self.reg[src] as u32) as u64;
+                // XOR cannot overflow, clear the flag
+                self.vm.vm_taint_state.borrow_mut().clear_register_overflowed(dst as u8);
                 instrument_alu_reg!(self, dst, src, false);
             },
             ebpf::MOV32_IMM  => {
@@ -726,6 +772,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
             ebpf::OR64_REG   => {
                 self.reg[dst] |= self.reg[src];
+                // OR cannot overflow, clear the flag
+                self.vm.vm_taint_state.borrow_mut().clear_register_overflowed(dst as u8);
                 instrument_alu_reg!(self, dst, src, true);
             },
             ebpf::AND64_IMM  => {
@@ -734,6 +782,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
             ebpf::AND64_REG  => {
                 self.reg[dst] &= self.reg[src];
+                // AND cannot overflow, clear the flag
+                self.vm.vm_taint_state.borrow_mut().clear_register_overflowed(dst as u8);
                 instrument_alu_reg!(self, dst, src, true);
             },
             ebpf::LSH64_IMM  => {
@@ -791,6 +841,8 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             },
             ebpf::XOR64_REG  => {
                 self.reg[dst] ^= self.reg[src];
+                // XOR cannot overflow, clear the flag
+                self.vm.vm_taint_state.borrow_mut().clear_register_overflowed(dst as u8);
                 instrument_alu_reg!(self, dst, src, true);
             },
             ebpf::MOV64_IMM  => {
