@@ -73,89 +73,107 @@ macro_rules! throw_error {
 /// Instrument a LOAD instruction (memory -> register)
 macro_rules! instrument_load {
     ($self:expr, $dst:expr, $vm_addr:expr, $size:expr) => {
-        $self
-            .vm
-            .instrumenter
-            .borrow_mut()
-            .on_load(&mut $self.vm.vm_taint_state.borrow_mut(), $dst as u8, $vm_addr, $size, $self.reg[$dst]);
+        $self.vm.instrumenter.borrow_mut().on_load(
+            &mut $self.vm.vm_taint_state.borrow_mut(),
+            $dst as u8,
+            $vm_addr,
+            $size,
+            $self.reg[$dst],
+        );
     };
 }
 
 /// Instrument a STORE instruction (register -> memory)
 macro_rules! instrument_store {
     ($self:expr, $src:expr, $vm_addr:expr, $size:expr) => {
-        $self
-            .vm
-            .instrumenter
-            .borrow_mut()
-            .on_store(&mut $self.vm.vm_taint_state.borrow_mut(), $src as u8, $vm_addr, $size, $self.reg[$src]);
+        $self.vm.instrumenter.borrow_mut().on_store(
+            &mut $self.vm.vm_taint_state.borrow_mut(),
+            $src as u8,
+            $vm_addr,
+            $size,
+            $self.reg[$src],
+        );
     };
 }
 
 /// Instrument a STORE immediate instruction (immediate -> memory)
 macro_rules! instrument_store_imm {
     ($self:expr, $vm_addr:expr, $imm_value:expr, $size:expr) => {
-        $self
-            .vm
-            .instrumenter
-            .borrow_mut()
-            .on_store_imm(&mut $self.vm.vm_taint_state.borrow_mut(), $vm_addr, $imm_value, $size);
+        $self.vm.instrumenter.borrow_mut().on_store_imm(
+            &mut $self.vm.vm_taint_state.borrow_mut(),
+            $vm_addr,
+            $imm_value,
+            $size,
+        );
     };
 }
 
 /// Instrument an ALU register operation (dst = dst op src)
 macro_rules! instrument_alu_reg {
     ($self:expr, $dst:expr, $src:expr, $is_64bit:expr) => {
-        $self
-            .vm
-            .instrumenter
-            .borrow_mut()
-            .on_alu_reg(&mut $self.vm.vm_taint_state.borrow_mut(), $dst as u8, $src as u8, $is_64bit);
+        $self.vm.instrumenter.borrow_mut().on_alu_reg(
+            &mut $self.vm.vm_taint_state.borrow_mut(),
+            $dst as u8,
+            $src as u8,
+            $is_64bit,
+        );
     };
 }
 
 /// Instrument an ALU immediate operation (dst = dst op imm)
 macro_rules! instrument_alu_imm {
     ($self:expr, $dst:expr, $is_64bit:expr) => {
-        $self
-            .vm
-            .instrumenter
-            .borrow_mut()
-            .on_alu_imm(&mut $self.vm.vm_taint_state.borrow_mut(), $dst as u8, $is_64bit);
+        $self.vm.instrumenter.borrow_mut().on_alu_imm(
+            &mut $self.vm.vm_taint_state.borrow_mut(),
+            $dst as u8,
+            $is_64bit,
+        );
     };
 }
 
 /// Instrument a MOV immediate operation (dst = imm)
 macro_rules! instrument_mov_imm {
     ($self:expr, $dst:expr) => {
-        $self.vm.instrumenter.borrow_mut().on_mov_imm(&mut $self.vm.vm_taint_state.borrow_mut(), $dst as u8);
+        $self
+            .vm
+            .instrumenter
+            .borrow_mut()
+            .on_mov_imm(&mut $self.vm.vm_taint_state.borrow_mut(), $dst as u8);
     };
 }
 
 /// Instrument a MOV register operation (dst = src)
 /// $is_64bit: true for MOV64_REG, false for MOV32_REG
 macro_rules! instrument_mov_reg {
-    ($self:expr, $dst:expr, $src:expr, $is_64bit:expr) => {
-        {
-            // Propagate overflow flag from source to destination
-            let src_overflowed = $self.vm.vm_taint_state.borrow()
-                .is_register_overflowed($src as u8);
-            if src_overflowed {
-                $self.vm.vm_taint_state.borrow_mut()
-                    .mark_register_overflowed($dst as u8);
-            } else {
-                $self.vm.vm_taint_state.borrow_mut()
-                    .clear_register_overflowed($dst as u8);
-            }
-
-            // Continue with regular taint tracking
+    ($self:expr, $dst:expr, $src:expr, $is_64bit:expr) => {{
+        // Propagate overflow flag from source to destination
+        let src_overflowed = $self
+            .vm
+            .vm_taint_state
+            .borrow()
+            .is_register_overflowed($src as u8);
+        if src_overflowed {
             $self
                 .vm
-                .instrumenter
+                .vm_taint_state
                 .borrow_mut()
-                .on_mov_reg(&mut $self.vm.vm_taint_state.borrow_mut(), $dst as u8, $src as u8, $is_64bit);
+                .mark_register_overflowed($dst as u8);
+        } else {
+            $self
+                .vm
+                .vm_taint_state
+                .borrow_mut()
+                .clear_register_overflowed($dst as u8);
         }
-    };
+
+        // Continue with regular taint tracking
+        $self.vm.instrumenter.borrow_mut().on_mov_reg(
+            &mut $self.vm.vm_taint_state.borrow_mut(),
+            $dst as u8,
+            $src as u8,
+            $is_64bit,
+        );
+    }};
 }
 
 /// Instrument a conditional jump instruction
@@ -214,73 +232,95 @@ macro_rules! instrument_exit {
 macro_rules! instrument_arithmetic_op {
     // REG variant: dst = dst op src
     ($self:expr, $pc:expr, $opcode:expr, $op_type:expr, $dst:expr, $src:expr,
-     $operand_a:expr, $operand_b:expr, $result:expr, $overflowed:expr) => {
-        {
-            // Mark/clear overflow flag for real-time detection
-            if $overflowed {
-                $self.vm.vm_taint_state.borrow_mut()
-                    .mark_register_overflowed($dst as u8);
-            } else {
-                $self.vm.vm_taint_state.borrow_mut()
-                    .clear_register_overflowed($dst as u8);
-            }
-
-            // Only record detailed arithmetic operations in debug mode
-            #[cfg(debug_assertions)]
-            {
-                let dst_taint = $self.vm.vm_taint_state.borrow().get_register_taints($dst as u8);
-                let src_taint = Some($self.vm.vm_taint_state.borrow().get_register_taints($src as u8));
-
-                $self.vm.instrumenter.borrow_mut().on_arithmetic_op(
-                    &$self.vm.vm_taint_state.borrow(),
-                    $pc,
-                    $opcode,
-                    $op_type,
-                    $dst as u8,
-                    $operand_a,
-                    $operand_b,
-                    $result,
-                    $overflowed,
-                    dst_taint,
-                    src_taint,
-                );
-            }
+     $operand_a:expr, $operand_b:expr, $result:expr, $overflowed:expr) => {{
+        // Mark/clear overflow flag for real-time detection
+        if $overflowed {
+            $self
+                .vm
+                .vm_taint_state
+                .borrow_mut()
+                .mark_register_overflowed($dst as u8);
+        } else {
+            $self
+                .vm
+                .vm_taint_state
+                .borrow_mut()
+                .clear_register_overflowed($dst as u8);
         }
-    };
+
+        // Only record detailed arithmetic operations in debug mode
+        #[cfg(debug_assertions)]
+        {
+            let dst_taint = $self
+                .vm
+                .vm_taint_state
+                .borrow()
+                .get_register_taints($dst as u8);
+            let src_taint = Some(
+                $self
+                    .vm
+                    .vm_taint_state
+                    .borrow()
+                    .get_register_taints($src as u8),
+            );
+
+            $self.vm.instrumenter.borrow_mut().on_arithmetic_op(
+                &$self.vm.vm_taint_state.borrow(),
+                $pc,
+                $opcode,
+                $op_type,
+                $dst as u8,
+                $operand_a,
+                $operand_b,
+                $result,
+                $overflowed,
+                dst_taint,
+                src_taint,
+            );
+        }
+    }};
     // IMM variant: dst = dst op imm
     ($self:expr, $pc:expr, $opcode:expr, $op_type:expr, $dst:expr,
-     $operand_a:expr, $operand_b:expr, $result:expr, $overflowed:expr) => {
-        {
-            // Mark/clear overflow flag for real-time detection
-            if $overflowed {
-                $self.vm.vm_taint_state.borrow_mut()
-                    .mark_register_overflowed($dst as u8);
-            } else {
-                $self.vm.vm_taint_state.borrow_mut()
-                    .clear_register_overflowed($dst as u8);
-            }
-
-            // Only record detailed arithmetic operations in debug mode
-            #[cfg(debug_assertions)]
-            {
-                let dst_taint = $self.vm.vm_taint_state.borrow().get_register_taints($dst as u8);
-
-                $self.vm.instrumenter.borrow_mut().on_arithmetic_op(
-                    &$self.vm.vm_taint_state.borrow(),
-                    $pc,
-                    $opcode,
-                    $op_type,
-                    $dst as u8,
-                    $operand_a,
-                    $operand_b,
-                    $result,
-                    $overflowed,
-                    dst_taint,
-                    None, // IMM operations have no source register taint
-                );
-            }
+     $operand_a:expr, $operand_b:expr, $result:expr, $overflowed:expr) => {{
+        // Mark/clear overflow flag for real-time detection
+        if $overflowed {
+            $self
+                .vm
+                .vm_taint_state
+                .borrow_mut()
+                .mark_register_overflowed($dst as u8);
+        } else {
+            $self
+                .vm
+                .vm_taint_state
+                .borrow_mut()
+                .clear_register_overflowed($dst as u8);
         }
-    };
+
+        // Only record detailed arithmetic operations in debug mode
+        #[cfg(debug_assertions)]
+        {
+            let dst_taint = $self
+                .vm
+                .vm_taint_state
+                .borrow()
+                .get_register_taints($dst as u8);
+
+            $self.vm.instrumenter.borrow_mut().on_arithmetic_op(
+                &$self.vm.vm_taint_state.borrow(),
+                $pc,
+                $opcode,
+                $op_type,
+                $dst as u8,
+                $operand_a,
+                $operand_b,
+                $result,
+                $overflowed,
+                dst_taint,
+                None, // IMM operations have no source register taint
+            );
+        }
+    }};
 }
 
 macro_rules! check_pc {
@@ -356,10 +396,13 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
     fn push_frame(&mut self, config: &Config) -> bool {
         let frame = &mut self.vm.call_frames[self.vm.call_depth as usize];
         // Save scratch register taint (r6-r9) to CallFrame
-        self.vm.instrumenter.borrow_mut().save_scratch_register_taint(
-            &mut self.vm.vm_taint_state.borrow_mut(),
-            &mut frame.caller_saved_taint,
-        );
+        self.vm
+            .instrumenter
+            .borrow_mut()
+            .save_scratch_register_taint(
+                &mut self.vm.vm_taint_state.borrow_mut(),
+                &mut frame.caller_saved_taint,
+            );
 
         frame.caller_saved_registers.copy_from_slice(
             &self.reg[ebpf::FIRST_SCRATCH_REG..ebpf::FIRST_SCRATCH_REG + ebpf::SCRATCH_REGS],
