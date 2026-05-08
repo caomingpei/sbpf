@@ -443,20 +443,6 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
             let taint_source_map = Self::create_taint_source_map(&self.memory_mapping).unwrap();
             self.vm_taint_state.borrow_mut().init(&taint_source_map);
         }
-        // NovaFuzz: Print input data taint sources, for debugging
-        // {
-        //     let instrumenter = self.instrumenter.borrow();
-
-        //     for (addr, source) in instrumenter.taint_tracker.original_sources.iter() {
-        //         if let &novafuzz_instrument::types::InstructionSemantic::Account(
-        //             _,
-        //             AccountSemantic::Duplicate(_),
-        //         ) = source
-        //         {
-        //             println!("NovaFuzz: Input data taint source at address: 0x{:x}", addr);
-        //         }
-        //     }
-        // }
 
         self.registers[11] = executable.get_entrypoint_instruction_offset() as u64;
         let config = executable.get_config();
