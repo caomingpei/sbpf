@@ -28,7 +28,7 @@ use std::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use novafuzz_shared::model::instrument::InstructionSemantic;
+use novafuzz_shared::model::taint::TaintSource;
 
 #[cfg(feature = "shuttle-test")]
 use shuttle::sync::Arc;
@@ -49,7 +49,6 @@ const PROGRAM_ENVIRONMENT_KEY_SHIFT: u32 = 4;
 static RUNTIME_ENVIRONMENT_KEY: std::sync::OnceLock<i32> = std::sync::OnceLock::<i32>::new();
 
 use novafuzz_instrument::{Instrumenter, TaintSourceMap, VmTaintState};
-use novafuzz_shared::model::instrument::AccountSemantic;
 
 /// Returns (and if not done before generates) the encryption key for the VM pointer
 pub fn get_runtime_environment_key() -> i32 {
@@ -200,7 +199,7 @@ pub struct CallFrame {
     /// The target_pc of the exit instruction which returns back to the caller
     pub target_pc: u64,
     /// Taint state for caller saved registers (r6-r9), 4 registers × 8 bytes each
-    pub caller_saved_taint: [[Option<InstructionSemantic>; 8]; 4],
+    pub caller_saved_taint: [[Option<TaintSource>; 8]; 4],
 }
 
 /// Indices of slots inside [EbpfVm]
