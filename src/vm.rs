@@ -28,7 +28,7 @@ use std::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use novafuzz_shared::model::taint::TaintSource;
+use novafuzz_shared::model::taint::ByteOrigin;
 
 #[cfg(feature = "shuttle-test")]
 use shuttle::sync::Arc;
@@ -199,7 +199,7 @@ pub struct CallFrame {
     /// The target_pc of the exit instruction which returns back to the caller
     pub target_pc: u64,
     /// Taint state for caller saved registers (r6-r9), 4 registers × 8 bytes each
-    pub caller_saved_taint: [[Option<TaintSource>; 8]; 4],
+    pub caller_saved_taint: [[Option<ByteOrigin>; 8]; 4],
 }
 
 /// Indices of slots inside [EbpfVm]
@@ -318,7 +318,7 @@ pub struct EbpfVm<'a, C: ContextObject> {
 }
 
 impl<'a, C: ContextObject> EbpfVm<'a, C> {
-    /// NovaFuzz: Create taint source map from memory mapping
+    /// NovaFuzz: Create byte-origin map from memory mapping
     fn create_taint_source_map(
         memory_mapping: &MemoryMapping<'a>,
     ) -> Result<TaintSourceMap, String> {
@@ -340,7 +340,7 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
                 ProgramResult::Err(_) => None,
             }
         };
-        // Create TaintSourceMap
+        // Create address-to-byte-origin map.
         TaintSourceMap::from_memory_regions(ebpf::MM_INPUT_START, read_u8, read_u64)
     }
 
