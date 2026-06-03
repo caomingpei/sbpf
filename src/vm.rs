@@ -48,7 +48,7 @@ const PROGRAM_ENVIRONMENT_KEY_SHIFT: u32 = 4;
 #[cfg(feature = "jit")]
 static RUNTIME_ENVIRONMENT_KEY: std::sync::OnceLock<i32> = std::sync::OnceLock::<i32>::new();
 
-use novafuzz_instrument::{Instrumenter, TaintSourceMap, VmTaintState};
+use novafuzz_instrument::{Instrumenter, TaintSourceLayout, VmTaintState};
 
 /// Returns (and if not done before generates) the encryption key for the VM pointer
 pub fn get_runtime_environment_key() -> i32 {
@@ -318,10 +318,10 @@ pub struct EbpfVm<'a, C: ContextObject> {
 }
 
 impl<'a, C: ContextObject> EbpfVm<'a, C> {
-    /// NovaFuzz: Create byte-origin map from memory mapping
-    fn create_taint_source_map(
+    /// NovaFuzz: Create byte-origin layout from memory mapping
+    fn create_taint_source_layout(
         memory_mapping: &MemoryMapping<'a>,
-    ) -> Result<TaintSourceMap, String> {
+    ) -> Result<TaintSourceLayout, String> {
         use crate::{ebpf, memory_region::AccessType};
 
         // Create read closures
@@ -340,8 +340,8 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
                 ProgramResult::Err(_) => None,
             }
         };
-        // Create address-to-byte-origin map.
-        TaintSourceMap::from_memory_regions(ebpf::MM_INPUT_START, read_u8, read_u64)
+        // Create address-to-byte-origin layout.
+        TaintSourceLayout::from_memory_regions(ebpf::MM_INPUT_START, read_u8, read_u64)
     }
 
     /// Creates a new virtual machine instance.
@@ -440,35 +440,35 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         // NovaFuzz: Initialize THIS VM's taint state (no init_flag check)
         {
             #[cfg(feature = "novafuzz-telemetry")]
-            let source_map_parse_start = std::time::Instant::now();
-            let taint_source_map = Self::create_taint_source_map(&self.memory_mapping).unwrap();
+            let source_layout_parse_start = std::time::Instant::now();
+            let taint_source_layout =
+                Self::create_taint_source_layout(&self.memory_mapping).unwrap();
             #[cfg(feature = "novafuzz-telemetry")]
-            let source_map_parse_us = source_map_parse_start
+            let source_layout_parse_us = source_layout_parse_start
                 .elapsed()
                 .as_micros()
                 .min(u128::from(u64::MAX)) as u64;
             #[cfg(feature = "novafuzz-telemetry")]
-            let source_map_entries = taint_source_map.len();
+            let source_layout_segments = taint_source_layout.segment_count();
+            #[cfg(feature = "novafuzz-telemetry")]
+            let source_layout_bytes = taint_source_layout.byte_len();
             {
                 let mut vm_taint_state = self.vm_taint_state.borrow_mut();
                 #[cfg(feature = "novafuzz-telemetry")]
                 let vm_taint_init_start = std::time::Instant::now();
-                vm_taint_state.init(&taint_source_map);
+                vm_taint_state.init(taint_source_layout);
                 #[cfg(feature = "novafuzz-telemetry")]
                 let vm_taint_init_us = vm_taint_init_start
                     .elapsed()
                     .as_micros()
                     .min(u128::from(u64::MAX)) as u64;
                 #[cfg(feature = "novafuzz-telemetry")]
-                self.instrumenter
-                    .borrow_mut()
-                    .record_taint_setup_profile(
-                        source_map_parse_us,
-                        vm_taint_init_us,
-                        source_map_entries,
-                        vm_taint_state.memory_taint_len(),
-                        vm_taint_state.address_source_layout_len(),
-                    );
+                self.instrumenter.borrow_mut().record_taint_setup_profile(
+                    source_layout_parse_us,
+                    vm_taint_init_us,
+                    source_layout_segments,
+                    source_layout_bytes,
+                );
             }
         }
 
@@ -520,6 +520,13 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         self.instrumenter
             .borrow_mut()
             .record_vm_instruction_count(instruction_count);
+        #[cfg(feature = "novafuzz-telemetry")]
+        {
+            let vm_taint_state = self.vm_taint_state.borrow();
+            self.instrumenter
+                .borrow_mut()
+                .record_taint_overlay_snapshot(&vm_taint_state);
+        }
         (instruction_count, result)
     }
 
