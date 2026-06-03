@@ -439,8 +439,24 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
 
         // NovaFuzz: Initialize THIS VM's taint state (no init_flag check)
         {
+            #[cfg(feature = "novafuzz-telemetry")]
+            let source_map_start = std::time::Instant::now();
             let taint_source_map = Self::create_taint_source_map(&self.memory_mapping).unwrap();
-            self.vm_taint_state.borrow_mut().init(&taint_source_map);
+            #[cfg(feature = "novafuzz-telemetry")]
+            let source_map_entries = taint_source_map.len();
+            {
+                let mut vm_taint_state = self.vm_taint_state.borrow_mut();
+                vm_taint_state.init(&taint_source_map);
+                #[cfg(feature = "novafuzz-telemetry")]
+                self.instrumenter
+                    .borrow_mut()
+                    .record_taint_source_map_profile(
+                        source_map_start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+                        source_map_entries,
+                        vm_taint_state.memory_taint_len(),
+                        vm_taint_state.address_source_layout_len(),
+                    );
+            }
         }
 
         self.registers[11] = executable.get_entrypoint_instruction_offset() as u64;
@@ -487,6 +503,10 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         };
         let mut result = ProgramResult::Ok(0);
         std::mem::swap(&mut result, &mut self.program_result);
+        #[cfg(feature = "novafuzz-telemetry")]
+        self.instrumenter
+            .borrow_mut()
+            .record_vm_instruction_count(instruction_count);
         (instruction_count, result)
     }
 
