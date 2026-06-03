@@ -440,18 +440,31 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         // NovaFuzz: Initialize THIS VM's taint state (no init_flag check)
         {
             #[cfg(feature = "novafuzz-telemetry")]
-            let source_map_start = std::time::Instant::now();
+            let source_map_parse_start = std::time::Instant::now();
             let taint_source_map = Self::create_taint_source_map(&self.memory_mapping).unwrap();
+            #[cfg(feature = "novafuzz-telemetry")]
+            let source_map_parse_us = source_map_parse_start
+                .elapsed()
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64;
             #[cfg(feature = "novafuzz-telemetry")]
             let source_map_entries = taint_source_map.len();
             {
                 let mut vm_taint_state = self.vm_taint_state.borrow_mut();
+                #[cfg(feature = "novafuzz-telemetry")]
+                let vm_taint_init_start = std::time::Instant::now();
                 vm_taint_state.init(&taint_source_map);
+                #[cfg(feature = "novafuzz-telemetry")]
+                let vm_taint_init_us = vm_taint_init_start
+                    .elapsed()
+                    .as_micros()
+                    .min(u128::from(u64::MAX)) as u64;
                 #[cfg(feature = "novafuzz-telemetry")]
                 self.instrumenter
                     .borrow_mut()
-                    .record_taint_source_map_profile(
-                        source_map_start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+                    .record_taint_setup_profile(
+                        source_map_parse_us,
+                        vm_taint_init_us,
                         source_map_entries,
                         vm_taint_state.memory_taint_len(),
                         vm_taint_state.address_source_layout_len(),
