@@ -19,7 +19,7 @@ use crate::{
     program::BuiltinFunction,
     vm::{Config, ContextObject, EbpfVm},
 };
-use novafuzz_shared::model::instrument::ArithmeticOpType;
+use novafuzz_shared::model::instrument::{ArithmeticOpType, ArithmeticOverflowSource};
 
 /// Virtual memory operation helper.
 macro_rules! translate_memory_access {
@@ -131,6 +131,37 @@ macro_rules! instrument_alu_imm {
     };
 }
 
+/// Instrument an ALU register operation without changing overflow provenance.
+macro_rules! instrument_alu_reg_preserve_overflow {
+    ($self:expr, $dst:expr, $src:expr, $is_64bit:expr) => {
+        $self
+            .vm
+            .instrumenter
+            .borrow_mut()
+            .on_alu_reg_preserve_overflow(
+                &mut $self.vm.vm_taint_state.borrow_mut(),
+                $dst as u8,
+                $src as u8,
+                $is_64bit,
+            );
+    };
+}
+
+/// Instrument an ALU immediate operation without changing overflow provenance.
+macro_rules! instrument_alu_imm_preserve_overflow {
+    ($self:expr, $dst:expr, $is_64bit:expr) => {
+        $self
+            .vm
+            .instrumenter
+            .borrow_mut()
+            .on_alu_imm_preserve_overflow(
+                &mut $self.vm.vm_taint_state.borrow_mut(),
+                $dst as u8,
+                $is_64bit,
+            );
+    };
+}
+
 /// Instrument a MOV immediate operation (dst = imm)
 macro_rules! instrument_mov_imm {
     ($self:expr, $dst:expr) => {
@@ -146,27 +177,6 @@ macro_rules! instrument_mov_imm {
 /// $is_64bit: true for MOV64_REG, false for MOV32_REG
 macro_rules! instrument_mov_reg {
     ($self:expr, $dst:expr, $src:expr, $is_64bit:expr) => {{
-        // Propagate overflow flag from source to destination
-        let src_overflowed = $self
-            .vm
-            .vm_taint_state
-            .borrow()
-            .is_register_overflowed($src as u8);
-        if src_overflowed {
-            $self
-                .vm
-                .vm_taint_state
-                .borrow_mut()
-                .mark_register_overflowed($dst as u8);
-        } else {
-            $self
-                .vm
-                .vm_taint_state
-                .borrow_mut()
-                .clear_register_overflowed($dst as u8);
-        }
-
-        // Continue with regular taint tracking
         $self.vm.instrumenter.borrow_mut().on_mov_reg(
             &mut $self.vm.vm_taint_state.borrow_mut(),
             $dst as u8,
@@ -174,6 +184,17 @@ macro_rules! instrument_mov_reg {
             $is_64bit,
         );
     }};
+}
+
+/// Instrument endian conversion, which overwrites dst.
+macro_rules! instrument_endian {
+    ($self:expr, $dst:expr) => {
+        $self
+            .vm
+            .instrumenter
+            .borrow_mut()
+            .on_endian(&mut $self.vm.vm_taint_state.borrow_mut(), $dst as u8);
+    };
 }
 
 /// Instrument a conditional jump instruction
@@ -233,13 +254,19 @@ macro_rules! instrument_arithmetic_op {
     // REG variant: dst = dst op src
     ($self:expr, $pc:expr, $opcode:expr, $op_type:expr, $dst:expr, $src:expr,
      $operand_a:expr, $operand_b:expr, $result:expr, $overflowed:expr) => {{
+        let overflow_source = ArithmeticOverflowSource {
+            pc: $pc as u64,
+            opcode: $opcode,
+            op_type: $op_type,
+            result: $result,
+        };
         // Mark/clear overflow flag for real-time detection
         if $overflowed {
             $self
                 .vm
                 .vm_taint_state
                 .borrow_mut()
-                .mark_register_overflowed($dst as u8);
+                .mark_register_overflowed($dst as u8, overflow_source);
         } else {
             $self
                 .vm
@@ -282,13 +309,19 @@ macro_rules! instrument_arithmetic_op {
     // IMM variant: dst = dst op imm
     ($self:expr, $pc:expr, $opcode:expr, $op_type:expr, $dst:expr,
      $operand_a:expr, $operand_b:expr, $result:expr, $overflowed:expr) => {{
+        let overflow_source = ArithmeticOverflowSource {
+            pc: $pc as u64,
+            opcode: $opcode,
+            op_type: $op_type,
+            result: $result,
+        };
         // Mark/clear overflow flag for real-time detection
         if $overflowed {
             $self
                 .vm
                 .vm_taint_state
                 .borrow_mut()
-                .mark_register_overflowed($dst as u8);
+                .mark_register_overflowed($dst as u8, overflow_source);
         } else {
             $self
                 .vm
@@ -402,6 +435,13 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             .save_scratch_register_taint(
                 &mut self.vm.vm_taint_state.borrow_mut(),
                 &mut frame.caller_saved_taint,
+            );
+        self.vm
+            .instrumenter
+            .borrow_mut()
+            .save_scratch_register_overflow(
+                &mut self.vm.vm_taint_state.borrow_mut(),
+                &mut frame.caller_saved_overflow,
             );
 
         frame.caller_saved_registers.copy_from_slice(
@@ -681,6 +721,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                         throw_error!(self, EbpfError::InvalidInstruction);
                     }
                 };
+                instrument_endian!(self, dst);
             },
             ebpf::BE         => {
                 self.reg[dst] = match insn.imm {
@@ -691,6 +732,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                         throw_error!(self, EbpfError::InvalidInstruction);
                     }
                 };
+                instrument_endian!(self, dst);
             },
 
             // BPF_ALU64_STORE class
@@ -705,7 +747,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     ArithmeticOpType::Add,
                     dst, operand_a, operand_b, result, overflowed
                 );
-                instrument_alu_imm!(self, dst, true);
+                instrument_alu_imm_preserve_overflow!(self, dst, true);
             },
             ebpf::ADD64_REG  => {
                 let operand_a = self.reg[dst];
@@ -718,7 +760,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     ArithmeticOpType::Add,
                     dst, src, operand_a, operand_b, result, overflowed
                 );
-                instrument_alu_reg!(self, dst, src, true);
+                instrument_alu_reg_preserve_overflow!(self, dst, src, true);
             },
             ebpf::SUB64_IMM  => {
                 let (operand_a, operand_b, result, overflowed) = if self.executable.get_sbpf_version().swap_sub_reg_imm_operands() {
@@ -739,7 +781,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     ArithmeticOpType::Sub,
                     dst, operand_a, operand_b, result, overflowed
                 );
-                instrument_alu_imm!(self, dst, true);
+                instrument_alu_imm_preserve_overflow!(self, dst, true);
             },
             ebpf::SUB64_REG  => {
                 let operand_a = self.reg[dst];
@@ -752,7 +794,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     ArithmeticOpType::Sub,
                     dst, src, operand_a, operand_b, result, overflowed
                 );
-                instrument_alu_reg!(self, dst, src, true);
+                instrument_alu_reg_preserve_overflow!(self, dst, src, true);
             },
             ebpf::MUL64_IMM  if !self.executable.get_sbpf_version().enable_pqr() => {
                 let operand_a = self.reg[dst];
@@ -765,7 +807,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     ArithmeticOpType::Mul,
                     dst, operand_a, operand_b, result, overflowed
                 );
-                instrument_alu_imm!(self, dst, true);
+                instrument_alu_imm_preserve_overflow!(self, dst, true);
             },
             ebpf::ST_1B_IMM  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
@@ -783,7 +825,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     ArithmeticOpType::Mul,
                     dst, src, operand_a, operand_b, result, overflowed
                 );
-                instrument_alu_reg!(self, dst, src, true);
+                instrument_alu_reg_preserve_overflow!(self, dst, src, true);
             },
             ebpf::ST_1B_REG  if self.executable.get_sbpf_version().move_memory_instruction_classes() => {
                 let vm_addr = (self.reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
@@ -1354,6 +1396,10 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                         &mut self.vm.vm_taint_state.borrow_mut(),
                         &mut temp_frame.caller_saved_taint,
                     );
+                    self.vm.instrumenter.borrow_mut().save_scratch_register_overflow(
+                        &mut self.vm.vm_taint_state.borrow_mut(),
+                        &mut temp_frame.caller_saved_overflow,
+                    );
 
                     self.reg[0] = match self.dispatch_syscall(function) {
                         ProgramResult::Ok(value) => *value,
@@ -1363,6 +1409,10 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     self.vm.instrumenter.borrow_mut().restore_scratch_register_taint(
                         &mut self.vm.vm_taint_state.borrow_mut(),
                         &temp_frame.caller_saved_taint,
+                    );
+                    self.vm.instrumenter.borrow_mut().restore_scratch_register_overflow(
+                        &mut self.vm.vm_taint_state.borrow_mut(),
+                        &temp_frame.caller_saved_overflow,
                     );
                     // Clear taint on r0 (syscall return value is untainted)
                     self.vm.instrumenter.borrow_mut().on_syscall_return(&mut self.vm.vm_taint_state.borrow_mut());
@@ -1388,6 +1438,10 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                         &mut self.vm.vm_taint_state.borrow_mut(),
                         &mut temp_frame.caller_saved_taint,
                     );
+                    self.vm.instrumenter.borrow_mut().save_scratch_register_overflow(
+                        &mut self.vm.vm_taint_state.borrow_mut(),
+                        &mut temp_frame.caller_saved_overflow,
+                    );
 
                     self.reg[0] = match self.dispatch_syscall(function) {
                         ProgramResult::Ok(value) => *value,
@@ -1397,6 +1451,10 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     self.vm.instrumenter.borrow_mut().restore_scratch_register_taint(
                         &mut self.vm.vm_taint_state.borrow_mut(),
                         &temp_frame.caller_saved_taint,
+                    );
+                    self.vm.instrumenter.borrow_mut().restore_scratch_register_overflow(
+                        &mut self.vm.vm_taint_state.borrow_mut(),
+                        &temp_frame.caller_saved_overflow,
                     );
                     // Clear taint on r0 (syscall return value is untainted)
                     self.vm.instrumenter.borrow_mut().on_syscall_return(&mut self.vm.vm_taint_state.borrow_mut());
@@ -1432,6 +1490,10 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                 self.vm.instrumenter.borrow_mut().restore_scratch_register_taint(
                     &mut self.vm.vm_taint_state.borrow_mut(),
                     &frame.caller_saved_taint,
+                );
+                self.vm.instrumenter.borrow_mut().restore_scratch_register_overflow(
+                    &mut self.vm.vm_taint_state.borrow_mut(),
+                    &frame.caller_saved_overflow,
                 );
                 check_pc!(self, next_pc, frame.target_pc);
             }

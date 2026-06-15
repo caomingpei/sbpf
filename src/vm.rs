@@ -28,6 +28,7 @@ use std::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use novafuzz_shared::model::instrument::ArithmeticOverflowSource;
 use novafuzz_shared::model::taint::ByteOrigin;
 
 #[cfg(feature = "shuttle-test")]
@@ -200,6 +201,8 @@ pub struct CallFrame {
     pub target_pc: u64,
     /// Taint state for caller saved registers (r6-r9), 4 registers × 8 bytes each
     pub caller_saved_taint: [[Option<ByteOrigin>; 8]; 4],
+    /// Overflow provenance for caller saved registers (r6-r9).
+    pub caller_saved_overflow: [Option<ArithmeticOverflowSource>; ebpf::SCRATCH_REGS],
 }
 
 /// Indices of slots inside [EbpfVm]
